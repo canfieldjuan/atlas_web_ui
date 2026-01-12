@@ -21,6 +21,24 @@ from graphiti_core.prompts.models import Message
 from embedder_factory import EmbedderSettings, create_embedder
 from sentiment_similarity import SentimentSimilarityAnalyzer
 from llm_client_wrapper import create_retrying_llm_client
+from query_utils import (
+    classify_query,
+    expand_query,
+    get_best_variant,
+    should_expand_query,
+    detect_temporal_intent,
+    query_decomposer,
+    SubQuery,
+    DecomposedQuery,
+)
+from reranker import (
+    HeuristicReranker,
+    CrossEncoderReranker,
+    create_reranker,
+    deduplicate_by_content,
+)
+from fallback_service import fallback_service, FallbackResult
+from graphrag_service import graphrag_service, EnhancedPrompt
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -691,6 +709,300 @@ async def search(
         return SearchResult(edges=edge_dicts, nodes=[])
     except Exception as e:
         logger.error(f"Error searching: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class EnhancedSearchRequest(BaseModel):
+    """Request model for enhanced search."""
+    query: str
+    group_ids: str
+    num_results: int = 10
+    threshold: float = 0.3
+    enable_expansion: bool = True
+    enable_reranking: bool = True
+    reranker_type: str = "heuristic"
+    enable_deduplication: bool = True
+    enable_decomposition: bool = True
+    enable_fallback: bool = True
+
+
+class EnhancedSearchResult(BaseModel):
+    """Result model for enhanced search."""
+    edges: list[dict]
+    nodes: list[dict] = []
+    metadata: dict = {}
+
+
+@app.post('/search/enhanced')
+async def enhanced_search(
+    request: EnhancedSearchRequest,
+    graphiti: GraphitiDep
+) -> EnhancedSearchResult:
+    """
+    Enhanced search with query processing pipeline.
+
+    Pipeline: classify -> decompose -> expand -> search -> rerank -> dedupe
+    """
+    try:
+        start_time = datetime.now()
+        original_query = request.query
+
+        classification = classify_query(original_query)
+        if classification.should_skip_search:
+            logger.info(
+                "Skipping search for tool-specific query: %s",
+                classification.reason
+            )
+            return EnhancedSearchResult(
+                edges=[],
+                nodes=[],
+                metadata={
+                    "skipped": True,
+                    "reason": classification.reason,
+                    "detected_pattern": classification.detected_pattern,
+                },
+            )
+
+        decomposition_info = None
+        sub_queries_to_search = [original_query]
+
+        if request.enable_decomposition and query_decomposer.should_decompose(original_query):
+            decomposed = query_decomposer.decompose(original_query)
+            if decomposed.is_complex and len(decomposed.sub_queries) > 1:
+                sub_queries_to_search = [sq.query for sq in decomposed.sub_queries]
+                decomposition_info = {
+                    "is_complex": True,
+                    "reason": decomposed.complexity_reason,
+                    "sub_query_count": len(decomposed.sub_queries),
+                    "sub_queries": [
+                        {"query": sq.query, "priority": sq.priority, "type": sq.query_type}
+                        for sq in decomposed.sub_queries
+                    ],
+                }
+                logger.info(
+                    "Query decomposed: %s -> %d sub-queries (%s)",
+                    original_query[:50],
+                    len(decomposed.sub_queries),
+                    decomposed.complexity_reason
+                )
+
+        expansion_info = None
+        final_search_queries = []
+        for sq in sub_queries_to_search:
+            search_query = sq
+            if request.enable_expansion and should_expand_query(sq):
+                expanded = expand_query(sq)
+                search_query = get_best_variant(expanded)
+                if expansion_info is None:
+                    expansion_info = {
+                        "original": original_query,
+                        "expanded": search_query,
+                        "variants": expanded.variants,
+                        "transformations": expanded.transformations_applied,
+                    }
+                logger.info("Query expanded: %s -> %s", sq[:30], search_query[:30])
+            final_search_queries.append(search_query)
+
+        temporal_intent = detect_temporal_intent(original_query)
+
+        group_id_list = [g.strip() for g in request.group_ids.split(",") if g.strip()]
+
+        per_query_limit = request.num_results * 3 if request.enable_reranking else request.num_results
+        if len(final_search_queries) > 1:
+            per_query_limit = max(5, per_query_limit // len(final_search_queries))
+
+        all_edges = []
+        for search_query in final_search_queries:
+            edges = await graphiti.search(
+                query=search_query,
+                group_ids=group_id_list,
+                num_results=per_query_limit,
+            )
+            all_edges.extend(edges)
+
+        edges = all_edges
+        logger.info("Raw search returned %d edges from %d queries", len(edges), len(final_search_queries))
+
+        edge_dicts = []
+        for idx, edge in enumerate(edges):
+            edge_dict = {
+                "uuid": edge.uuid,
+                "name": edge.name,
+                "fact": edge.fact,
+                "score": edge.score if hasattr(edge, "score") and edge.score else 0.5,
+                "created_at": edge.created_at.isoformat() if edge.created_at else None,
+            }
+            if hasattr(edge, "source_node") and edge.source_node:
+                edge_dict["source_node"] = {
+                    "name": getattr(edge.source_node, "name", ""),
+                    "uuid": getattr(edge.source_node, "uuid", ""),
+                }
+            if hasattr(edge, "target_node") and edge.target_node:
+                edge_dict["target_node"] = {
+                    "name": getattr(edge.target_node, "name", ""),
+                    "uuid": getattr(edge.target_node, "uuid", ""),
+                }
+            edge_dicts.append(edge_dict)
+
+        filtered = [e for e in edge_dicts if e.get("score", 0) >= request.threshold]
+        logger.info("After threshold %.2f: %d edges", request.threshold, len(filtered))
+
+        fallback_info = None
+        if request.enable_fallback and fallback_service.should_trigger_fallback(len(filtered)):
+            logger.info("Triggering fallback search (only %d results)", len(filtered))
+            group_id = group_id_list[0] if group_id_list else None
+            fallback_result = await fallback_service.execute_fallback(
+                query=original_query,
+                group_id=group_id,
+                limit=request.num_results,
+            )
+            if fallback_result.sources:
+                for source in fallback_result.sources:
+                    filtered.append({
+                        "uuid": "",
+                        "name": source.entity,
+                        "fact": source.fact,
+                        "score": source.confidence,
+                        "source_description": source.source_description,
+                        "is_fallback": True,
+                    })
+                fallback_info = {
+                    "triggered": True,
+                    "strategy": fallback_result.strategy,
+                    "sources_added": len(fallback_result.sources),
+                    "query_time_ms": fallback_result.query_time_ms,
+                }
+                logger.info("Fallback added %d sources", len(fallback_result.sources))
+
+        reranker_used = None
+        if request.enable_reranking and len(filtered) > 0:
+            reranker = create_reranker(
+                reranker_type=request.reranker_type,
+                top_k=request.num_results,
+            )
+            if reranker is not None:
+                candidates = [
+                    {"text": e["fact"], "score": e["score"], "metadata": e}
+                    for e in filtered
+                ]
+                reranked = reranker.rerank(original_query, candidates)
+                reranker_used = request.reranker_type
+                filtered = [r.metadata for r in reranked]
+                logger.info("After %s reranking: %d edges", reranker_used, len(filtered))
+
+        if request.enable_deduplication:
+            before_count = len(filtered)
+            filtered = deduplicate_by_content(filtered, content_key="fact")
+            logger.info("After deduplication: %d -> %d", before_count, len(filtered))
+
+        final_edges = filtered[:request.num_results]
+
+        elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+
+        return EnhancedSearchResult(
+            edges=final_edges,
+            nodes=[],
+            metadata={
+                "query_time_ms": elapsed_ms,
+                "original_query": original_query,
+                "search_queries": final_search_queries,
+                "decomposition": decomposition_info,
+                "expansion": expansion_info,
+                "temporal_intent": {
+                    "is_historical": temporal_intent.is_historical,
+                    "date_from": temporal_intent.date_from,
+                    "date_to": temporal_intent.date_to,
+                    "requires_latest": temporal_intent.requires_latest,
+                },
+                "results_count": len(final_edges),
+                "raw_results_count": len(edges),
+                "threshold": request.threshold,
+                "reranking_enabled": request.enable_reranking,
+                "reranker_type": reranker_used or request.reranker_type,
+                "deduplication_enabled": request.enable_deduplication,
+                "decomposition_enabled": request.enable_decomposition,
+                "fallback_enabled": request.enable_fallback,
+                "fallback": fallback_info,
+            },
+        )
+
+    except Exception as e:
+        logger.error("Enhanced search error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class EnhancePromptRequest(BaseModel):
+    """Request model for prompt enhancement."""
+    query: str
+    group_ids: str
+    min_confidence: float = 0.3
+    max_sources: int = 5
+    max_context_length: int = 4000
+    compress_context: bool = False
+    include_metadata: bool = True
+
+
+class EnhancePromptResponse(BaseModel):
+    """Response model for prompt enhancement."""
+    prompt: str
+    context_used: bool
+    sources: list = []
+    metadata: dict = {}
+
+
+@app.post('/enhance')
+async def enhance_prompt(
+    request: EnhancePromptRequest,
+    graphiti: GraphitiDep
+) -> EnhancePromptResponse:
+    """
+    Enhance a user prompt with document context.
+
+    Performs search and injects relevant context into the prompt.
+    """
+    try:
+        start_time = datetime.now()
+
+        group_id_list = [g.strip() for g in request.group_ids.split(",") if g.strip()]
+
+        edges = await graphiti.search(
+            query=request.query,
+            group_ids=group_id_list,
+            num_results=request.max_sources * 2,
+        )
+
+        sources = []
+        for edge in edges:
+            sources.append({
+                "entity": getattr(edge.source_node, "name", "") if hasattr(edge, "source_node") else "",
+                "relation": edge.name if hasattr(edge, "name") else "",
+                "fact": edge.fact if hasattr(edge, "fact") else "",
+                "confidence": edge.score if hasattr(edge, "score") and edge.score else 0.5,
+                "source_description": "",
+            })
+
+        elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+
+        result = await graphrag_service.enhance_prompt(
+            user_message=request.query,
+            sources=sources,
+            retrieval_time_ms=elapsed_ms,
+            min_confidence=request.min_confidence,
+            max_sources=request.max_sources,
+            max_context_length=request.max_context_length,
+            compress_context=request.compress_context,
+            include_metadata=request.include_metadata,
+        )
+
+        return EnhancePromptResponse(
+            prompt=result.prompt,
+            context_used=result.context_used,
+            sources=result.sources,
+            metadata=result.metadata,
+        )
+
+    except Exception as e:
+        logger.error("Enhance prompt error: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
