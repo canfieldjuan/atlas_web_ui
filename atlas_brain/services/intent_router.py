@@ -70,6 +70,9 @@ ROUTE_DEFINITIONS: dict[str, list[str]] = {
         "send an email to John about the meeting", "draft an email to the client",
         "compose an email about the project update", "email Sarah regarding the invoice",
         "write an email to the team about Friday", "send a message to the contractor",
+        "send an estimate email to Sarah Johnson", "email the proposal to the client",
+        "send the cleaning estimate to the customer", "what emails did I send today",
+        "show me my email history", "check what emails were sent this week",
     ],
     "calendar_write": [
         "add a meeting to my calendar for Thursday", "create a calendar event for Tuesday",
