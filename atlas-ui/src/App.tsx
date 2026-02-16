@@ -14,6 +14,7 @@ function App() {
     privacyMode, setPrivacyMode, textInput, setTextInput,
     media, setMedia, conversationHistory,
   } = useAtlasStore();
+  const inputRef = useRef<HTMLInputElement>(null);
   const [showLeftPanel, setShowLeftPanel] = useState(false);
   const [showRightPanel, setShowRightPanel] = useState(false);
   const [logs, setLogs] = useState([
@@ -37,6 +38,7 @@ function App() {
     if (!text) return;
     sendText(text);
     setTextInput('');
+    inputRef.current?.blur();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -80,7 +82,7 @@ function App() {
 
 
   return (
-    <div className="min-h-screen w-full bg-[#020617] text-cyan-400 font-mono overflow-hidden flex flex-col p-4 select-none relative">
+    <div className="fixed inset-0 bg-[#020617] text-cyan-400 font-mono overflow-hidden flex flex-col p-4 select-none">
 
       {/* --- DEEP SPACE 3D BACKGROUND --- */}
 
@@ -364,6 +366,7 @@ function App() {
       {/* Footer: Text Input */}
       <footer className="mt-4 flex gap-2 z-10 relative">
         <input
+          ref={inputRef}
           type="text"
           value={textInput}
           onChange={(e) => setTextInput(e.target.value)}
