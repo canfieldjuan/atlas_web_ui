@@ -137,7 +137,7 @@ async def run_email_workflow(
             llm=llm,
             messages=messages,
             tools_override=tools,
-            max_tokens=300,
+            max_tokens=600,
             temperature=0.7,
         )
     except Exception as e:

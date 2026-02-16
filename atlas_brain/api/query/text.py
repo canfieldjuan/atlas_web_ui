@@ -32,6 +32,12 @@ async def query_text(request: TextQueryRequest):
     """
     logger.info("Text query: %s (session=%s)", request.query_text[:50], request.session_id)
 
+    # Ensure session row exists for workflow state persistence
+    if request.session_id:
+        from ...utils.session_id import normalize_session_id, ensure_session_row
+        request.session_id = normalize_session_id(request.session_id)
+        await ensure_session_row(request.session_id)
+
     agent = get_agent("atlas")
     result = await agent.process(
         input_text=request.query_text,
