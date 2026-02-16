@@ -22,6 +22,9 @@ dist/
 build/
 .next/
 
+# Large binaries
+*.tgz
+
 # OS
 .DS_Store
 Thumbs.db
