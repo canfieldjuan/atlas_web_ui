@@ -757,3 +757,98 @@ class ProposalEmailTool:
 
 # Module-level instance
 proposal_email_tool = ProposalEmailTool()
+
+
+class QueryEmailHistoryTool:
+    """Query sent email history from the database."""
+
+    @property
+    def name(self) -> str:
+        return "query_email_history"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Query the history of sent emails. "
+            "Use this when the user asks about emails they've sent, "
+            "wants to check email history, or see recent sent emails."
+        )
+
+    @property
+    def parameters(self) -> list[ToolParameter]:
+        return [
+            ToolParameter(
+                name="hours",
+                param_type="int",
+                description="Number of hours to look back (e.g., 24 for today, 168 for this week)",
+                required=False,
+            ),
+            ToolParameter(
+                name="template_type",
+                param_type="string",
+                description="Filter by email type: 'estimate', 'proposal', or 'generic'",
+                required=False,
+            ),
+            ToolParameter(
+                name="limit",
+                param_type="int",
+                description="Maximum number of results to return (default: 20)",
+                required=False,
+            ),
+        ]
+
+    @property
+    def aliases(self) -> list[str]:
+        return ["email history", "sent emails", "check emails"]
+
+    @property
+    def category(self) -> str:
+        return "communication"
+
+    async def execute(self, params: dict[str, Any]) -> ToolResult:
+        """Query sent email history from the database."""
+        try:
+            from datetime import datetime, timedelta, timezone
+            from ..storage.repositories.email import get_email_repo
+
+            repo = get_email_repo()
+
+            hours = params.get("hours")
+            template_type = params.get("template_type")
+            limit = params.get("limit", 20)
+
+            since = None
+            if hours:
+                since = datetime.now(timezone.utc) - timedelta(hours=int(hours))
+
+            emails = await repo.query(
+                template_type=template_type,
+                since=since,
+                limit=int(limit),
+            )
+
+            email_list = [e.to_dict() for e in emails]
+
+            if not email_list:
+                return ToolResult(
+                    success=True,
+                    data={"emails": [], "count": 0},
+                    message="No emails found matching the criteria.",
+                )
+
+            return ToolResult(
+                success=True,
+                data={"emails": email_list, "count": len(email_list)},
+                message=f"Found {len(email_list)} email(s) in history.",
+            )
+        except Exception as e:
+            logger.error("Failed to query email history: %s", e)
+            return ToolResult(
+                success=False,
+                error="QUERY_ERROR",
+                message=f"Failed to query email history: {e}",
+            )
+
+
+# Module-level instance
+query_email_history_tool = QueryEmailHistoryTool()

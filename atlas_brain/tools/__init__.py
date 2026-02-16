@@ -28,6 +28,8 @@ from .email import (
     estimate_email_tool,
     ProposalEmailTool,
     proposal_email_tool,
+    QueryEmailHistoryTool,
+    query_email_history_tool,
 )
 from .scheduling import (
     CheckAvailabilityTool,
@@ -93,9 +95,7 @@ from .display import (
 
 # Register tools on import
 # NOTE: Read-only tools are registered for fast-path execution. Scheduling, reminder,
-# and calendar tools are also registered for LLM tool calling in their workflows.
-# Email tools (send_email, send_estimate_email, send_proposal_email) are NOT registered
-# -- they route through the LangGraph email workflow directly.
+# calendar, and email tools are also registered for LLM tool calling in their workflows.
 tool_registry.register(weather_tool)
 tool_registry.register(traffic_tool)
 tool_registry.register(location_tool)
@@ -139,6 +139,11 @@ tool_registry.register(reminder_tool)
 tool_registry.register(complete_reminder_tool)
 # Calendar tools - create event for LLM tool calling in calendar conversations
 tool_registry.register(create_calendar_event_tool)
+# Email tools - available for LLM tool calling in email conversations
+tool_registry.register(email_tool)
+tool_registry.register(estimate_email_tool)
+tool_registry.register(proposal_email_tool)
+tool_registry.register(query_email_history_tool)
 
 __all__ = [
     "Tool",
@@ -172,6 +177,8 @@ __all__ = [
     "estimate_email_tool",
     "ProposalEmailTool",
     "proposal_email_tool",
+    "QueryEmailHistoryTool",
+    "query_email_history_tool",
     "CheckAvailabilityTool",
     "check_availability_tool",
     "BookAppointmentTool",
