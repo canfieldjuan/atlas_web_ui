@@ -14,12 +14,12 @@ You are composing a brief nudge about pending action items that have been sittin
 
 You will receive a JSON object with:
 - `pending_count`: Total number of pending actions
-- `escalations`: Breakdown by age tier:
-  - `stale`: Count of items 7+ days old
-  - `overdue`: Count of items 3-6 days old
-  - `pending`: Count of items 1-2 days old
-  - `fresh`: Count of items less than 1 day old
-- `notified`: Whether a notification was sent
+- `escalations`: Breakdown by age tier, each with `count` and `items` (list of action text strings):
+  - `stale`: Items 7+ days old (highest priority)
+  - `overdue`: Items 3-6 days old
+  - `pending`: Items 1-2 days old
+  - `fresh`: Count of items less than 1 day old (number only, no items list)
+- `notified`: Whether a push notification was already sent
 
 ## Output Structure
 

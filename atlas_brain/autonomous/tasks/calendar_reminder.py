@@ -21,7 +21,7 @@ _notified_events: set[str] = set()
 _MAX_DEDUP_ENTRIES = 500
 
 
-async def run(task: ScheduledTask) -> dict[str, Any]:
+async def run(task: ScheduledTask) -> dict[str, Any] | str:
     """
     Check upcoming calendar events and notify when someone is home.
 
@@ -31,16 +31,16 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
     """
     global _notified_events
 
-    # 1. Presence gate -- skip if house is empty
+    # 1. Presence gate
     from ...autonomous.presence import get_presence_tracker, OccupancyState
 
     presence = get_presence_tracker()
     if presence.state.state == OccupancyState.EMPTY:
-        return {"skipped": True, "reason": "house_empty"}
+        return "Skipped: house empty"
 
     # 2. Calendar config gate
     if not settings.tools.calendar_enabled or not settings.tools.calendar_refresh_token:
-        return {"skipped": True, "reason": "calendar_not_configured"}
+        return "Skipped: calendar not configured"
 
     metadata = task.metadata or {}
     lead_minutes = metadata.get("lead_minutes", 30)
@@ -71,7 +71,8 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
 
     notified = []
     for event in candidates:
-        dedup_key = f"{event.id}:{event.start.date()}"
+        event_key = event.id or event.summary
+        dedup_key = f"{event_key}:{event.start.isoformat()}"
         if dedup_key in _notified_events:
             continue
         _notified_events.add(dedup_key)

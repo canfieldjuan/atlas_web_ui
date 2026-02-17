@@ -279,10 +279,14 @@ class TaskScheduler:
                     metadata=task_def.get("metadata"),
                 )
                 self._register_task(task)
+                schedule_info = (
+                    task.cron_expression
+                    or (f"every {task.interval_seconds}s" if task.interval_seconds else task.schedule_type)
+                )
                 logger.info(
                     "Seeded default task '%s' (%s)",
                     task.name,
-                    task.cron_expression,
+                    schedule_info,
                 )
 
         except Exception as e:
