@@ -143,6 +143,7 @@ class HeadlessRunner:
                         result, skill_name, task.name,
                     )
                     if synthesized:
+                        await self._notify_result(synthesized, task)
                         return AgentResult(
                             success=True,
                             response_text=synthesized,
@@ -172,6 +173,39 @@ class HeadlessRunner:
         """
         val = result.get("_skip_synthesis")
         return val if isinstance(val, str) else None
+
+    async def _notify_result(self, text: str, task: ScheduledTask) -> None:
+        """Send a push notification with the synthesized task result."""
+        if not autonomous_config.notify_results:
+            return
+
+        from ..config import settings
+
+        if not settings.alerts.ntfy_enabled:
+            return
+
+        # Per-task opt-out via metadata
+        if (task.metadata or {}).get("notify") is False:
+            return
+
+        # Build a human-friendly title from task name
+        title = f"Atlas: {task.name.replace('_', ' ').title()}"
+        priority = (
+            (task.metadata or {}).get("notify_priority")
+            or autonomous_config.notify_priority
+        )
+
+        try:
+            from ..tools.notify import notify_tool
+
+            await notify_tool._send_notification(
+                message=text,
+                title=title,
+                priority=priority,
+            )
+            logger.info("Sent notification for task '%s'", task.name)
+        except Exception:
+            logger.warning("Failed to send notification for task '%s'", task.name, exc_info=True)
 
     async def _synthesize_with_skill(
         self,

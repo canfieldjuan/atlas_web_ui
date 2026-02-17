@@ -16,24 +16,27 @@ async def _ensure_migrations_table(pool) -> None:
     """Create the migrations tracking table if it doesn't exist."""
     await pool.execute("""
         CREATE TABLE IF NOT EXISTS schema_migrations (
-            id SERIAL PRIMARY KEY,
-            filename VARCHAR(255) NOT NULL UNIQUE,
+            version INTEGER PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
             applied_at TIMESTAMPTZ DEFAULT NOW()
         )
     """)
 
 
 async def _get_applied_migrations(pool) -> set[str]:
-    """Get set of already applied migration filenames."""
-    rows = await pool.fetch("SELECT filename FROM schema_migrations")
-    return {row["filename"] for row in rows}
+    """Get set of already applied migration names (e.g. '025_temporal_patterns')."""
+    rows = await pool.fetch("SELECT name FROM schema_migrations")
+    return {row["name"] for row in rows}
 
 
 async def _record_migration(pool, filename: str) -> None:
     """Record that a migration has been applied."""
+    # Extract version number from filename prefix (e.g. '025_temporal_patterns.sql' -> 25)
+    version = int(filename.split("_", 1)[0])
+    name = filename.removesuffix(".sql")
     await pool.execute(
-        "INSERT INTO schema_migrations (filename) VALUES ($1)",
-        filename
+        "INSERT INTO schema_migrations (version, name) VALUES ($1, $2) ON CONFLICT (version) DO NOTHING",
+        version, name,
     )
 
 
@@ -60,7 +63,7 @@ async def run_migrations(pool) -> None:
         logger.info("No migration files found")
         return
 
-    pending = [f for f in migration_files if f.name not in applied]
+    pending = [f for f in migration_files if f.stem not in applied]
 
     if not pending:
         logger.debug("All %d migrations already applied", len(migration_files))

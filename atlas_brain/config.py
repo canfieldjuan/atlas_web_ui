@@ -1373,6 +1373,16 @@ class AutonomousConfig(BaseSettings):
         description="LLM temperature for synthesis (lower = more deterministic)",
     )
 
+    # Push notifications for task results
+    notify_results: bool = Field(
+        default=True,
+        description="Send ntfy push notification when a synthesized task result is produced",
+    )
+    notify_priority: str = Field(
+        default="default",
+        description="Default ntfy priority for autonomous task notifications",
+    )
+
 
 class EscalationConfig(BaseSettings):
     """Edge-local narration + brain-side escalation configuration."""
