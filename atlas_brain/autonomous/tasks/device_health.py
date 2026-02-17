@@ -32,6 +32,7 @@ async def run(task: ScheduledTask) -> dict:
             "healthy": 0,
             "issues": [],
             "summary": "Home Assistant integration is disabled.",
+            "_skip_synthesis": "Device health check skipped -- Home Assistant not enabled.",
         }
 
     if not settings.homeassistant.token:
@@ -40,6 +41,7 @@ async def run(task: ScheduledTask) -> dict:
             "healthy": 0,
             "issues": [],
             "summary": "Home Assistant token not configured.",
+            "_skip_synthesis": "Device health check skipped -- Home Assistant token not configured.",
         }
 
     metadata = task.metadata or {}
@@ -159,6 +161,8 @@ async def run(task: ScheduledTask) -> dict:
         "issues": issues,
         "summary": " ".join(summary_parts),
     }
+    if not issues:
+        result["_skip_synthesis"] = f"All {total} devices healthy -- no issues detected."
 
     logger.info("Device health: %s", result["summary"])
     return result

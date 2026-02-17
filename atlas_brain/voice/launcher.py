@@ -275,7 +275,7 @@ async def _stream_llm_response(
     mem_ctx = await svc.gather_context(
         query=transcript,
         session_id=session_id,
-        user_id=None,
+        user_id=context_dict.get("speaker_id"),
         include_rag=True,
         include_history=True,
         include_physical=False,

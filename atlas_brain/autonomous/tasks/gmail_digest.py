@@ -172,6 +172,7 @@ async def run(task: ScheduledTask) -> dict:
             "total_unread": 0,
             "emails": [],
             "summary": "Gmail digest is disabled. Set ATLAS_TOOLS_GMAIL_ENABLED=true.",
+            "_skip_synthesis": "Gmail digest skipped -- not enabled.",
         }
 
     store = get_google_token_store()
@@ -181,6 +182,7 @@ async def run(task: ScheduledTask) -> dict:
             "total_unread": 0,
             "emails": [],
             "summary": "Gmail not configured. Run: python scripts/setup_google_oauth.py",
+            "_skip_synthesis": "Gmail digest skipped -- not configured.",
         }
 
     metadata = task.metadata or {}
@@ -207,6 +209,7 @@ async def run(task: ScheduledTask) -> dict:
             "total_unread": 0,
             "emails": [],
             "summary": f"No emails matching '{query}'.",
+            "_skip_synthesis": "No unread emails.",
         }
 
     # Fetch metadata for each message (concurrently, batched)

@@ -119,6 +119,8 @@ async def run(task) -> dict:
         },
         "summary": " ".join(summary_parts),
     }
+    if total_vision == 0 and total_alerts == 0:
+        result["_skip_synthesis"] = f"All clear -- no security events in the last {hours} hours."
 
     logger.info("Security summary: %s", result["summary"])
     return result

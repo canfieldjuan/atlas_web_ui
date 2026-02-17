@@ -101,9 +101,12 @@ async def run(task: ScheduledTask) -> dict[str, Any] | str:
             "minutes_until": minutes_until,
         })
 
-    return {
+    result = {
         "checked": len(events),
         "in_window": len(candidates),
         "notified": len(notified),
         "events": notified,
     }
+    if not notified:
+        result["_skip_synthesis"] = "No upcoming events in the notification window."
+    return result

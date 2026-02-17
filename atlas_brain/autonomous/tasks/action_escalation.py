@@ -61,7 +61,12 @@ async def run(task: ScheduledTask) -> dict[str, Any] | str:
         return {"error": str(e)}
 
     if not rows:
-        return {"pending_count": 0, "escalations": {}, "notified": False}
+        return {
+            "pending_count": 0,
+            "escalations": {},
+            "notified": False,
+            "_skip_synthesis": "No pending action items.",
+        }
 
     # 3. Classify by age tier
     now = datetime.now(timezone.utc)

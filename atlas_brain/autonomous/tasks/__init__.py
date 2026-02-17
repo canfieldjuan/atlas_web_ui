@@ -12,6 +12,9 @@ def register_builtin_tasks(runner) -> None:
     from .departure_auto_fix import run as departure_auto_fix_run
     from .calendar_reminder import run as calendar_reminder_run
     from .action_escalation import run as action_escalation_run
+    from .preference_learning import run as preference_learning_run
+    from .pattern_learning import run as pattern_learning_run
+    from .anomaly_detection import run as anomaly_detection_run
 
     runner.register_builtin("security_summary", security_summary_run)
     runner.register_builtin("device_health_check", device_health_run)
@@ -22,3 +25,6 @@ def register_builtin_tasks(runner) -> None:
     runner.register_builtin("departure_auto_fix", departure_auto_fix_run)
     runner.register_builtin("calendar_reminder", calendar_reminder_run)
     runner.register_builtin("action_escalation", action_escalation_run)
+    runner.register_builtin("preference_learning", preference_learning_run)
+    runner.register_builtin("pattern_learning", pattern_learning_run)
+    runner.register_builtin("anomaly_detection", anomaly_detection_run)

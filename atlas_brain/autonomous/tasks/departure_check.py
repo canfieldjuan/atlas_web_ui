@@ -34,6 +34,7 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
             "total_checked": 0,
             "issues": [],
             "summary": "Home Assistant not enabled -- skipped.",
+            "_skip_synthesis": "Departure check skipped -- Home Assistant not enabled.",
         }
 
     ha_url = settings.homeassistant.url
@@ -43,6 +44,7 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
             "total_checked": 0,
             "issues": [],
             "summary": "Home Assistant token not configured -- skipped.",
+            "_skip_synthesis": "Departure check skipped -- Home Assistant token not configured.",
         }
 
     metadata = task.metadata or {}
@@ -122,8 +124,11 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         summary = f"Departure check: all clear ({total_checked} entities checked)."
 
     logger.info(summary)
-    return {
+    result = {
         "total_checked": total_checked,
         "issues": issues,
         "summary": summary,
     }
+    if not issues:
+        result["_skip_synthesis"] = f"Departure check: all clear ({total_checked} entities checked)."
+    return result

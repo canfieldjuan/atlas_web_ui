@@ -126,15 +126,28 @@ class HeadlessRunner:
             # Post-processing: LLM synthesis via skill
             skill_name = (task.metadata or {}).get("synthesis_skill")
             if skill_name and isinstance(result, dict):
-                synthesized = await self._synthesize_with_skill(
-                    result, skill_name, task.name,
-                )
-                if synthesized:
+                skip_msg = self._is_trivial_result(result)
+                if skip_msg:
+                    logger.info(
+                        "Skipping synthesis for task '%s' -- trivial result",
+                        task.name,
+                    )
+                    fallback = skip_msg
                     return AgentResult(
                         success=True,
-                        response_text=synthesized,
-                        metadata={"raw_result": result, "synthesis_skill": skill_name},
+                        response_text=fallback,
+                        metadata={"raw_result": result, "synthesis_skipped": True},
                     )
+                else:
+                    synthesized = await self._synthesize_with_skill(
+                        result, skill_name, task.name,
+                    )
+                    if synthesized:
+                        return AgentResult(
+                            success=True,
+                            response_text=synthesized,
+                            metadata={"raw_result": result, "synthesis_skill": skill_name},
+                        )
 
             return AgentResult(
                 success=True,
@@ -147,6 +160,18 @@ class HeadlessRunner:
                 error=str(e),
                 response_text=f"Builtin task failed: {e}",
             )
+
+    @staticmethod
+    def _is_trivial_result(result: dict) -> str | None:
+        """Check if a builtin task result has no meaningful data to synthesize.
+
+        Handlers opt in by setting ``_skip_synthesis`` to a non-empty fallback
+        message string when there is nothing worth sending to the LLM.
+        Returns the fallback message, or None if synthesis should proceed.
+        Note: empty string is treated as "proceed with synthesis".
+        """
+        val = result.get("_skip_synthesis")
+        return val if isinstance(val, str) else None
 
     async def _synthesize_with_skill(
         self,
@@ -166,7 +191,6 @@ class HeadlessRunner:
         from ..skills import get_skill_registry
         from ..services import llm_registry
         from ..services.protocols import Message
-        from ..orchestration import cuda_lock
 
         skill = get_skill_registry().get(skill_name)
         if skill is None:
@@ -190,12 +214,13 @@ class HeadlessRunner:
         ]
 
         try:
-            async with cuda_lock:
-                result = llm.chat(
-                    messages=messages,
-                    max_tokens=autonomous_config.synthesis_max_tokens,
-                    temperature=autonomous_config.synthesis_temperature,
-                )
+            # Ollama handles concurrency server-side; no need for cuda_lock
+            # on HTTP-based backends. Let all synthesis requests fly in parallel.
+            result = llm.chat(
+                messages=messages,
+                max_tokens=autonomous_config.synthesis_max_tokens,
+                temperature=autonomous_config.synthesis_temperature,
+            )
 
             text = result.get("response", "").strip()
             if not text:

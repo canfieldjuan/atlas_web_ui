@@ -58,7 +58,11 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
 
     pool = get_db_pool()
     if not pool.is_initialized:
-        return {"error": "Database not initialized", "scanned_messages": 0}
+        return {
+            "error": "Database not initialized",
+            "scanned_messages": 0,
+            "_skip_synthesis": "Proactive actions skipped -- database not ready.",
+        }
 
     metadata = task.metadata or {}
     hours = metadata.get("lookback_hours", 24)
@@ -133,10 +137,13 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
     )
     logger.info("Proactive actions: %s", summary)
 
-    return {
+    result = {
         "scanned_messages": len(rows),
         "actions_found": len(unique_actions),
         "actions_stored": stored,
         "actions": unique_actions[:10],
         "summary": summary,
     }
+    if not unique_actions:
+        result["_skip_synthesis"] = "No new action items from recent conversations."
+    return result

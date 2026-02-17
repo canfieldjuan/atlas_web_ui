@@ -209,7 +209,22 @@ class TaskScheduler:
                 "synthesis_skill": "digest/email_triage",
             },
         },
+        {
+            "name": "security_summary",
+            "description": "Periodic security event and alert aggregation",
+            "task_type": "builtin",
+            "schedule_type": "interval",
+            "interval_seconds": 21600,
+            "timeout_seconds": 60,
+            "metadata": {
+                "builtin_handler": "security_summary",
+                "synthesis_skill": "digest/security_summary",
+                "hours": 6,
+            },
+        },
         # Hook-triggered: runs on presence departure, no cron schedule
+        # Note: departure_check is called internally by departure_auto_fix,
+        # it does not need its own _DEFAULT_TASKS entry.
         {
             "name": "departure_auto_fix",
             "description": "Auto-fix lights, locks, covers when house goes empty",
@@ -248,6 +263,47 @@ class TaskScheduler:
             "metadata": {
                 "builtin_handler": "action_escalation",
                 "synthesis_skill": "digest/action_escalation",
+            },
+        },
+        # Nightly: learn temporal patterns from presence and session data
+        {
+            "name": "pattern_learning",
+            "description": "Learn temporal patterns from presence and session data",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "0 2 * * *",
+            "timeout_seconds": 60,
+            "metadata": {
+                "builtin_handler": "pattern_learning",
+                "lookback_days": 30,
+            },
+        },
+        # Nightly: auto-tune user preferences from conversation patterns
+        {
+            "name": "preference_learning",
+            "description": "Auto-tune user response style and expertise level from conversation patterns",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "30 2 * * *",
+            "timeout_seconds": 60,
+            "metadata": {
+                "builtin_handler": "preference_learning",
+                "lookback_days": 7,
+                "min_turns": 20,
+            },
+        },
+        # Proactive: detect unusual presence patterns and device states
+        {
+            "name": "anomaly_detection",
+            "description": "Detect unusual presence patterns and device states",
+            "task_type": "builtin",
+            "schedule_type": "interval",
+            "interval_seconds": 900,
+            "timeout_seconds": 30,
+            "metadata": {
+                "builtin_handler": "anomaly_detection",
+                "deviation_threshold": 2.0,
+                "min_samples": 5,
             },
         },
     ]
