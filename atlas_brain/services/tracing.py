@@ -168,7 +168,70 @@ class FTLTracingClient:
         if output_tokens and duration_ms > 0:
             payload["tokens_per_second"] = int(round(output_tokens / (duration_ms / 1000)))
 
-        # Fire and forget -- never block the caller
+        self._dispatch(payload)
+
+    def emit_child_span(
+        self,
+        parent: SpanContext,
+        span_name: str,
+        operation_type: str,
+        start_iso: str,
+        end_iso: str,
+        duration_ms: float,
+        status: str = "completed",
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        input_data: Optional[dict] = None,
+        output_data: Optional[dict] = None,
+        error_message: Optional[str] = None,
+        error_type: Optional[str] = None,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Emit a child span with explicit timestamps.
+
+        Useful when sub-step timings are known after the parent completes.
+        """
+        if not self._enabled:
+            return
+
+        duration_val = max(0, int(round(duration_ms)))
+        payload: dict[str, Any] = {
+            "trace_id": parent.trace_id,
+            "span_id": f"span_{uuid.uuid4().hex[:16]}",
+            "parent_trace_id": parent.span_id,
+            "span_name": span_name,
+            "operation_type": operation_type,
+            "start_time": start_iso,
+            "end_time": end_iso,
+            "duration_ms": duration_val,
+            "status": "failed" if error_message else status,
+            "model_name": parent.model_name,
+            "model_provider": parent.model_provider,
+            "session_tag": parent.session_id,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+            "metadata": {**(metadata or {})},
+        }
+
+        if self._user_id:
+            payload["user_id"] = self._user_id
+
+        if input_data:
+            payload["input_data"] = _truncate(input_data, 50_000)
+        if output_data:
+            payload["output_data"] = _truncate(output_data, 10_000)
+        if error_message:
+            payload["error_message"] = error_message
+            payload["error_type"] = error_type or "unknown"
+
+        if output_tokens and duration_val > 0:
+            payload["tokens_per_second"] = int(round(output_tokens / (duration_val / 1000)))
+
+        self._dispatch(payload)
+
+    def _dispatch(self, payload: dict[str, Any]) -> None:
+        """Fire-and-forget send; never block caller."""
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(self._send(payload))

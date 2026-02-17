@@ -5,6 +5,7 @@ Provides a common interface for LangGraph agent implementations.
 """
 
 import logging
+from datetime import datetime, timedelta
 from typing import Any, Optional, Protocol, runtime_checkable
 
 from .protocols import AgentResult
@@ -146,6 +147,16 @@ class LangGraphAgentAdapter:
             if tools_executed:
                 trace_meta["tools_executed"] = tools_executed
 
+            # Emit child spans for per-phase timings (classify/think/act/respond/etc.).
+            self._emit_timing_child_spans(
+                tracer=tracer,
+                parent_span=span,
+                timing=timing,
+                tools_executed=tools_executed,
+                llm_meta=llm_meta,
+                action_type=agent_result.action_type,
+            )
+
             tracer.end_span(
                 span,
                 status="completed" if agent_result.success else "failed",
@@ -168,6 +179,85 @@ class LangGraphAgentAdapter:
                 error_type=type(e).__name__,
             )
             raise
+
+    @staticmethod
+    def _safe_ms(value: Any) -> float:
+        """Coerce timing values to non-negative milliseconds."""
+        try:
+            ms = float(value)
+        except (TypeError, ValueError):
+            return 0.0
+        return ms if ms > 0 else 0.0
+
+    def _emit_timing_child_spans(
+        self,
+        tracer: Any,
+        parent_span: Any,
+        timing: dict[str, Any],
+        tools_executed: Any,
+        llm_meta: dict[str, Any],
+        action_type: str,
+    ) -> None:
+        """Emit child spans from timing breakdown returned by agent graphs."""
+        try:
+            root_start = datetime.fromisoformat(parent_span.start_iso)
+        except Exception:
+            # If timestamp parsing fails, skip child spans rather than risking bad payloads.
+            return
+
+        # Keep this order aligned with graph execution flow.
+        phase_definitions = [
+            ("classify", "agent.classify", "classification"),
+            ("memory", "agent.memory", "retrieval"),
+            ("think", "agent.think", "reasoning"),
+            ("act", "agent.act", "tool_call"),
+            ("respond", "agent.respond", "llm_call"),
+        ]
+
+        total_ms = self._safe_ms(timing.get("total"))
+        offset_ms = 0.0
+
+        for phase_key, span_name, operation_type in phase_definitions:
+            phase_ms = self._safe_ms(timing.get(phase_key))
+            if phase_ms <= 0:
+                continue
+
+            if total_ms > 0 and offset_ms >= total_ms:
+                break
+            if total_ms > 0 and offset_ms + phase_ms > total_ms:
+                phase_ms = max(0.0, total_ms - offset_ms)
+                if phase_ms <= 0:
+                    break
+
+            phase_start = root_start + timedelta(milliseconds=offset_ms)
+            phase_end = phase_start + timedelta(milliseconds=phase_ms)
+
+            phase_metadata: dict[str, Any] = {
+                "phase": phase_key,
+                "action_type": action_type,
+            }
+            if phase_key == "act" and tools_executed:
+                phase_metadata["tools_executed"] = tools_executed
+
+            phase_input_tokens = 0
+            phase_output_tokens = 0
+            if phase_key == "respond":
+                phase_input_tokens = int(llm_meta.get("input_tokens", 0) or 0)
+                phase_output_tokens = int(llm_meta.get("output_tokens", 0) or 0)
+
+            tracer.emit_child_span(
+                parent=parent_span,
+                span_name=span_name,
+                operation_type=operation_type,
+                start_iso=phase_start.isoformat(),
+                end_iso=phase_end.isoformat(),
+                duration_ms=phase_ms,
+                status="completed",
+                input_tokens=phase_input_tokens,
+                output_tokens=phase_output_tokens,
+                metadata=phase_metadata,
+            )
+            offset_ms += phase_ms
 
 
 # Agent factory singletons
