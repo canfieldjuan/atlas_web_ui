@@ -46,12 +46,8 @@ class HookManager:
             self._rule_to_tasks.clear()
 
             for task in tasks:
-                if task.task_type != "hook":
-                    continue
-
                 trigger_rules = (task.metadata or {}).get("trigger_rules", [])
                 if not trigger_rules:
-                    logger.warning("Hook task '%s' has no trigger_rules in metadata", task.name)
                     continue
 
                 for rule_name in trigger_rules:
@@ -158,7 +154,7 @@ class HookManager:
                         error=result.error,
                     )
 
-                    # Record execution time for cooldown (not on timeout — allow re-trigger)
+                    # Record execution time for cooldown (not on timeout -- allow re-trigger)
                     self._record_execution_time(task_name, rule.name)
 
                     logger.info(
@@ -301,7 +297,12 @@ class HookManager:
         rule: AlertRule,
         event: AlertEvent,
     ) -> ScheduledTask:
-        """Create a copy of the task with alert context injected into the prompt."""
+        """Create a copy of the task with alert context injected.
+
+        For agent_prompt/hook tasks: context is appended to the prompt.
+        For builtin tasks: context is also placed in metadata so
+        handlers can access it via task.metadata["_alert_context"].
+        """
         hook_task = copy.deepcopy(task)
 
         alert_context = (
@@ -317,6 +318,21 @@ class HookManager:
             alert_context += f"Event data: {event.metadata}\n"
 
         hook_task.prompt = (task.prompt or "") + alert_context
+
+        # Also inject structured context into metadata for builtin handlers
+        if hook_task.metadata is None:
+            hook_task.metadata = {}
+        ctx = {
+            "rule": rule.name,
+            "event_type": event.event_type,
+            "source": event.source_id,
+            "message": message,
+            "timestamp": event.timestamp.isoformat(),
+        }
+        if event.metadata:
+            ctx["event_data"] = event.metadata
+        hook_task.metadata["_alert_context"] = ctx
+
         return hook_task
 
 

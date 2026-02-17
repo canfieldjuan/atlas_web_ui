@@ -158,6 +158,98 @@ class TaskScheduler:
             "timeout_seconds": 120,
             "metadata": {"builtin_handler": "cleanup_old_executions"},
         },
+        # Phase 2: digest tasks with LLM synthesis
+        {
+            "name": "device_health_check",
+            "description": "Daily device health scan",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "0 6 * * *",
+            "timeout_seconds": 60,
+            "metadata": {
+                "builtin_handler": "device_health_check",
+                "synthesis_skill": "digest/device_health",
+            },
+        },
+        {
+            "name": "proactive_actions",
+            "description": "Extract actionable items from recent conversations",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "30 6 * * *",
+            "timeout_seconds": 60,
+            "metadata": {
+                "builtin_handler": "proactive_actions",
+                "synthesis_skill": "digest/proactive_actions",
+            },
+        },
+        {
+            "name": "morning_briefing",
+            "description": "Daily morning briefing: calendar, weather, security, devices, pending actions",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "0 7 * * *",
+            "timeout_seconds": 120,
+            "metadata": {
+                "builtin_handler": "morning_briefing",
+                "synthesis_skill": "digest/morning_briefing",
+                "calendar_hours": 12,
+                "security_hours": 8,
+            },
+        },
+        {
+            "name": "gmail_digest",
+            "description": "Daily email digest with triage",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "5 7 * * *",
+            "timeout_seconds": 60,
+            "metadata": {
+                "builtin_handler": "gmail_digest",
+                "synthesis_skill": "digest/email_triage",
+            },
+        },
+        # Hook-triggered: runs on presence departure, no cron schedule
+        {
+            "name": "departure_auto_fix",
+            "description": "Auto-fix lights, locks, covers when house goes empty",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": None,
+            "timeout_seconds": 30,
+            "metadata": {
+                "builtin_handler": "departure_auto_fix",
+                "trigger_rules": ["presence_departure"],
+                "synthesis_skill": "digest/departure_check",
+            },
+        },
+        # Proactive: calendar reminders when someone is home
+        {
+            "name": "calendar_reminder",
+            "description": "Check upcoming calendar events and notify when someone is home",
+            "task_type": "builtin",
+            "schedule_type": "interval",
+            "interval_seconds": 300,
+            "timeout_seconds": 30,
+            "metadata": {
+                "builtin_handler": "calendar_reminder",
+                "lead_minutes": 30,
+                "min_minutes": 15,
+            },
+        },
+        # Proactive: nudge about aging pending action items
+        {
+            "name": "action_escalation",
+            "description": "Nudge about aging pending action items when someone is home",
+            "task_type": "builtin",
+            "schedule_type": "interval",
+            "interval_seconds": 14400,
+            "timeout_seconds": 30,
+            "metadata": {
+                "builtin_handler": "action_escalation",
+                "synthesis_skill": "digest/action_escalation",
+            },
+        },
     ]
 
     async def _ensure_default_tasks(self) -> None:
@@ -182,6 +274,7 @@ class TaskScheduler:
                     task_type=task_def["task_type"],
                     schedule_type=task_def["schedule_type"],
                     cron_expression=task_def.get("cron_expression"),
+                    interval_seconds=task_def.get("interval_seconds"),
                     timeout_seconds=task_def.get("timeout_seconds", 120),
                     metadata=task_def.get("metadata"),
                 )
@@ -199,7 +292,10 @@ class TaskScheduler:
         """Register a task with APScheduler."""
         trigger = self._build_trigger(task)
         if trigger is None:
-            logger.warning(
+            # Hook-only tasks intentionally have no schedule; don't warn.
+            is_hook_only = bool((task.metadata or {}).get("trigger_rules"))
+            log = logger.debug if is_hook_only else logger.warning
+            log(
                 "Could not build trigger for task '%s' (schedule_type=%s)",
                 task.name, task.schedule_type,
             )
