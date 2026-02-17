@@ -612,10 +612,10 @@ class VoiceClientConfig(BaseSettings):
     wake_buffer_frames: int = Field(default=5, description="Pre-roll buffer size in frames for wake word mode (captures audio before wake word)")
 
     # Conversation-mode segmentation -- sliding window approach
-    # The sliding window of VAD probabilities prevents premature cutoff from
-    # VAD flicker during continuous speech, so silence_ms can be short (~500ms)
-    # for responsive finalization once the user actually stops talking.
-    conversation_silence_ms: int = Field(default=500, description="Confirmation silence duration in conversation mode")
+    # In conversation mode, users pause naturally between thoughts (~0.5-1s).
+    # 800ms silence + 300ms hangover = ~1040ms before finalization, which avoids
+    # cutting off mid-sentence pauses while staying responsive.
+    conversation_silence_ms: int = Field(default=800, description="Confirmation silence duration in conversation mode")
     conversation_hangover_ms: int = Field(default=300, description="Hangover in conversation mode")
     conversation_max_command_seconds: int = Field(default=120, description="Max recording in conversation mode")
     conversation_window_frames: int = Field(default=20, description="Sliding window size for speech ratio (0=disabled)")
