@@ -487,36 +487,6 @@ def _create_prefill_runner():
     return runner
 
 
-def _create_orpheus_tts(tts_cfg, voice_cfg):
-    """Create Orpheus TTS engine with Kokoro fallback."""
-    try:
-        from .tts_orpheus import OrpheusTTS
-        tts = OrpheusTTS(
-            voice=tts_cfg.orpheus_voice,
-            n_gpu_layers=tts_cfg.orpheus_n_gpu_layers,
-            lang=tts_cfg.orpheus_lang,
-            temperature=tts_cfg.orpheus_temperature,
-            top_p=tts_cfg.orpheus_top_p,
-            pre_buffer_size=tts_cfg.orpheus_pre_buffer,
-            n_ctx=tts_cfg.orpheus_n_ctx,
-        )
-        logger.info(
-            "Using Orpheus TTS (voice=%s, gpu_layers=%d, lang=%s)",
-            tts_cfg.orpheus_voice, tts_cfg.orpheus_n_gpu_layers,
-            tts_cfg.orpheus_lang,
-        )
-        # Preload model to avoid first-command latency
-        try:
-            tts._ensure_loaded()
-            logger.info("Orpheus TTS model preloaded")
-        except Exception as preload_err:
-            logger.warning("Orpheus TTS preload failed: %s", preload_err)
-        return tts
-    except Exception as e:
-        logger.warning("Orpheus TTS init failed (%s), falling back to Kokoro", e)
-        return _create_kokoro_tts(tts_cfg, voice_cfg)
-
-
 def _create_kokoro_tts(tts_cfg, voice_cfg):
     """Create Kokoro TTS engine with Piper fallback."""
     try:
@@ -629,9 +599,7 @@ def create_voice_pipeline(event_loop: Optional[asyncio.AbstractEventLoop] = None
 
     # Create TTS engine based on config
     tts_cfg = settings.tts
-    if tts_cfg.default_model == "orpheus":
-        tts = _create_orpheus_tts(tts_cfg, cfg)
-    elif tts_cfg.default_model == "kokoro":
+    if tts_cfg.default_model == "kokoro":
         tts = _create_kokoro_tts(tts_cfg, cfg)
     else:
         tts = _create_piper_tts(cfg)

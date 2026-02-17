@@ -69,3 +69,6 @@ nohup.out
 
 # YOLO model weights
 yolov8*.pt
+
+# Third-party clones (CosyVoice, etc.)
+third_party/
