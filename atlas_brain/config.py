@@ -553,7 +553,7 @@ class VoiceClientConfig(BaseSettings):
     )
     wake_threshold: float = Field(default=0.25, description="Wake word detection threshold")
     wake_confirmation_enabled: bool = Field(
-        default=True,
+        default=False,
         description="Play a short tone when wake word is detected"
     )
     wake_confirmation_freq: int = Field(
