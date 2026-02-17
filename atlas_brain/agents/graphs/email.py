@@ -12,7 +12,6 @@ Conversation history persists across voice turns via WorkflowStateManager.
 """
 
 import logging
-import re
 import time
 from typing import Optional
 
@@ -163,12 +162,6 @@ async def run_email_workflow(
 
     response = result.get("response", "")
     tools_executed = result.get("tools_executed", [])
-
-    # Strip <think> tags from Qwen3 and stray <tool_call> XML wrappers
-    response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL)
-    response = re.sub(r"</?tool_call>", "", response)
-    response = re.sub(r"<function=\w+>.*?</function>", "", response, flags=re.DOTALL)
-    response = response.strip()
 
     # Terminal tools: any send action or history query completes the workflow
     _terminal_tools = (

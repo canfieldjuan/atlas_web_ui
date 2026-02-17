@@ -207,8 +207,13 @@ async def classify_and_route(
         route_query,
     )
 
-    # Run semantic intent router
-    route_result = await route_query(input_text)
+    # Use pre-computed route from voice pipeline if available, otherwise compute
+    pre_route = state.get("runtime_context", {}).get("pre_route_result")
+    if pre_route is not None:
+        route_result = pre_route
+        logger.info("Using pre-computed route result (skipping duplicate route_query)")
+    else:
+        route_result = await route_query(input_text)
     threshold = settings.intent_router.confidence_threshold
     conv_threshold = settings.intent_router.conversation_confidence_threshold
 

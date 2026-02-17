@@ -180,9 +180,9 @@ def _create_streaming_agent_runner():
                         )
                         on_sentence(None)  # sentinel: clear accumulated sentences
                         _emitted.clear()
-                    await _run_agent_fallback(transcript, context_dict, _tracked_on_sentence)
+                    await _run_agent_fallback(transcript, context_dict, _tracked_on_sentence, pre_route_result=route_result)
             else:
-                await _run_agent_fallback(transcript, context_dict, _tracked_on_sentence)
+                await _run_agent_fallback(transcript, context_dict, _tracked_on_sentence, pre_route_result=route_result)
 
             # Check intent gating after processing
             if route_result and settings.voice_filter.intent_gating_enabled:
@@ -411,12 +411,16 @@ async def _run_agent_fallback(
     transcript: str,
     context_dict: Dict[str, Any],
     on_sentence: Callable[[str], None],
+    pre_route_result: Optional[Any] = None,
 ) -> None:
     """Run regular agent for tool/device queries via unified interface."""
     session_id = context_dict.get("session_id")
     node_id = context_dict.get("node_id")
     speaker_id = context_dict.get("speaker_id")
     speaker_name = context_dict.get("speaker_name")
+    runtime_ctx: Dict[str, Any] = {"node_id": node_id, "speaker_uuid": speaker_id}
+    if pre_route_result is not None:
+        runtime_ctx["pre_route_result"] = pre_route_result
     try:
         result = await process_with_fallback(
             input_text=transcript,
@@ -424,7 +428,7 @@ async def _run_agent_fallback(
             session_id=session_id,
             speaker_id=speaker_name,
             input_type="voice",
-            runtime_context={"node_id": node_id, "speaker_uuid": speaker_id},
+            runtime_context=runtime_ctx,
         )
         _signal_workflow_state(result)
         if result.response_text:

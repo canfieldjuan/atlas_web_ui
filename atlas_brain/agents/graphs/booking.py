@@ -10,7 +10,6 @@ Conversation history persists across voice turns via WorkflowStateManager.
 """
 
 import logging
-import re
 import time
 from typing import Optional
 
@@ -133,12 +132,6 @@ async def run_booking_workflow(
 
     response = result.get("response", "")
     tools_executed = result.get("tools_executed", [])
-
-    # Strip <think> tags from Qwen3 and stray <tool_call> XML wrappers
-    response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL)
-    response = re.sub(r"</?tool_call>", "", response)
-    response = re.sub(r"<function=\w+>.*?</function>", "", response, flags=re.DOTALL)
-    response = response.strip()
 
     # Determine if workflow is complete (booking, cancellation, or reschedule)
     _terminal_tools = ("book_appointment", "cancel_appointment", "reschedule_appointment")

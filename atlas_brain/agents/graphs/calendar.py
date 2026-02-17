@@ -9,7 +9,6 @@ Conversation history persists across voice turns via WorkflowStateManager.
 """
 
 import logging
-import re
 import time
 from typing import Optional
 
@@ -117,17 +116,12 @@ async def run_calendar_workflow(
     response = result.get("response", "")
     tools_executed = result.get("tools_executed", [])
 
-    # Strip <think> tags and stray tool XML
-    response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL)
-    response = re.sub(r"</?tool_call>", "", response)
-    response = re.sub(r"<function=\w+>.*?</function>", "", response, flags=re.DOTALL)
-    response = response.strip()
+    # Only mutating tools end the workflow; read-only tools (get_calendar)
+    # keep it alive for follow-ups like "add an event at that time"
+    _terminal_tools = ("create_calendar_event",)
+    workflow_done = any(t in tools_executed for t in _terminal_tools)
 
-    # Calendar operations are typically single-turn
-    any_tool_called = len(tools_executed) > 0
-
-    if any_tool_called:
-        # Tool executed -- workflow complete, clear state
+    if workflow_done:
         if session_id:
             await manager.clear_workflow_state(session_id)
         return {

@@ -244,7 +244,8 @@ async def execute_with_tools(
                 "success": tool_result.success,
                 "message": tool_result.message,
                 "data": tool_result.data,
-            })
+                "error": tool_result.error,
+            }, default=str)
             current_messages.append(Message(
                 role="tool",
                 content=result_content,
