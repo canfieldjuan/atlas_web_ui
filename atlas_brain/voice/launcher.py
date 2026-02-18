@@ -154,9 +154,12 @@ def _create_streaming_agent_runner():
                             "Streaming path: conversation (conf=%.2f)",
                             route_result.confidence
                         )
+                    # Conversation needs LLM — trigger prefill now
+                    if _voice_pipeline is not None:
+                        _voice_pipeline.trigger_prefill()
                 else:
                     logger.info(
-                        "Non-streaming path: %s/%s (conf=%.2f)",
+                        "Non-streaming path: %s/%s (conf=%.2f, skipping prefill)",
                         route_result.action_category,
                         route_result.tool_name or "none",
                         route_result.confidence

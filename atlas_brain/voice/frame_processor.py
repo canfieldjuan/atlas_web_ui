@@ -335,9 +335,9 @@ class FrameProcessor:
                     except Exception as e:
                         logger.warning("Error streaming wake pre-roll frame: %s", e)
 
-            # Trigger LLM prefill in background while recording
+            # Notify pipeline of wake word (plays confirmation sound)
             if self.on_wake_detected is not None:
-                logger.info("Triggering LLM prefill callback")
+                logger.info("Wake word callback fired")
                 self.on_wake_detected()
             return
 

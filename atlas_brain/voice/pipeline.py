@@ -895,7 +895,7 @@ class VoicePipeline:
             interrupt_rms_threshold=self.interrupt_rms_threshold,
             audio_gain=audio_gain,
             wake_reset=self.model.reset,
-            on_wake_detected=self._trigger_prefill,
+            on_wake_detected=self._on_wake_detected,
             streaming_asr_client=streaming_client,
             debug_logging=debug_logging,
             log_interval_frames=log_interval_frames,
@@ -1449,14 +1449,21 @@ class VoicePipeline:
         except Exception as e:
             logger.debug("Wake confirmation tone failed: %s", e)
 
-    def _trigger_prefill(self):
-        """Trigger LLM system prompt prefill in background.
+    def _on_wake_detected(self):
+        """Called when wake word is detected. Only plays confirmation sound.
 
-        Called when wake word is detected to warm up the LLM KV cache
-        while ASR is still recording. This reduces time-to-first-token
-        when the actual request is made.
+        Prefill is deferred until after intent routing so fast-path tool
+        queries (get_time, get_weather, etc.) never touch the LLM.
         """
         self._play_wake_confirmation()
+
+    def trigger_prefill(self):
+        """Trigger LLM system prompt prefill in background.
+
+        Called by the launcher AFTER intent routing confirms the query
+        needs the conversation LLM. This avoids wasting GPU on prefill
+        for fast-path tool queries.
+        """
         if self.prefill_runner is None:
             logger.debug("No prefill_runner configured")
             return
