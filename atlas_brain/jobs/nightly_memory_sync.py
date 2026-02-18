@@ -14,11 +14,16 @@ Flow:
 import asyncio
 import json
 import logging
+import subprocess
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
+import httpx
+
 logger = logging.getLogger("atlas.jobs.memory_sync")
+
+GRAPHITI_CONTAINER = "atlas-graphiti-wrapper"
 
 
 class NightlyMemorySync:
@@ -30,14 +35,17 @@ class NightlyMemorySync:
     and deduplication internally.
     """
 
-    def __init__(self, purge_days: int = None):
+    def __init__(self, purge_days: int = None, max_turns_per_run: int = 200):
         """
         Args:
             purge_days: Delete PostgreSQL messages older than this (default from config)
+            max_turns_per_run: Cap turns processed per run to stay within timeout.
+                Remaining turns are picked up on the next run.
         """
         from ..config import settings
 
         self.purge_days = purge_days if purge_days is not None else settings.memory.purge_days
+        self.max_turns_per_run = max_turns_per_run
         self._rag_client = None
 
     def _get_rag_client(self):
@@ -46,6 +54,49 @@ class NightlyMemorySync:
             from ..memory.rag_client import get_rag_client
             self._rag_client = get_rag_client()
         return self._rag_client
+
+    async def _ensure_graphiti_reachable(self) -> bool:
+        """Pre-flight check: verify Graphiti is reachable, auto-restart container if not."""
+        from ..config import settings
+
+        url = f"{settings.memory.base_url}/healthcheck"
+
+        # First attempt
+        if await self._ping_graphiti(url):
+            return True
+
+        # Unreachable -- try restarting the container
+        logger.warning(
+            "Graphiti unreachable at %s, restarting container '%s'",
+            url, GRAPHITI_CONTAINER,
+        )
+        try:
+            subprocess.run(
+                ["docker", "restart", GRAPHITI_CONTAINER],
+                capture_output=True, timeout=30,
+            )
+        except Exception as e:
+            logger.error("Failed to restart Graphiti container: %s", e)
+            return False
+
+        # Wait for it to come back up (up to 20s)
+        for attempt in range(4):
+            await asyncio.sleep(5)
+            if await self._ping_graphiti(url):
+                logger.info("Graphiti recovered after container restart")
+                return True
+
+        logger.error("Graphiti still unreachable after container restart")
+        return False
+
+    @staticmethod
+    async def _ping_graphiti(url: str) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                resp = await client.get(url)
+                return resp.status_code == 200
+        except Exception:
+            return False
 
     async def run(self, target_date: Optional[datetime] = None) -> dict:
         """
@@ -64,19 +115,32 @@ class NightlyMemorySync:
             "date": str(target_date.date()),
             "sessions_processed": 0,
             "turns_sent": 0,
+            "turns_remaining": 0,
             "messages_purged": 0,
             "errors": [],
         }
 
         try:
+            # 0. Pre-flight: ensure Graphiti is reachable
+            if not await self._ensure_graphiti_reachable():
+                summary["errors"].append("Graphiti unreachable after auto-restart attempt")
+                return summary
+
             # 1. Load un-synced conversation turns, grouped by session
             sessions_turns = await self._load_unsynced_turns()
-            logger.info("Found %d sessions with un-synced turns", len(sessions_turns))
+            total_turns = sum(len(t) for t in sessions_turns.values())
+            logger.info(
+                "Found %d sessions with %d un-synced turns (cap: %d)",
+                len(sessions_turns), total_turns, self.max_turns_per_run,
+            )
 
-            # 2. Process each session
+            # 2. Process sessions until turn cap is reached
             rag_client = self._get_rag_client()
+            turns_budget = self.max_turns_per_run
 
             for session_id, conversation_turns in sessions_turns.items():
+                if turns_budget <= 0:
+                    break
                 try:
                     # Collect turn IDs for marking as synced on success
                     turn_ids = [turn["id"] for turn in conversation_turns]
@@ -117,10 +181,12 @@ class NightlyMemorySync:
                         await self._mark_turns_synced(turn_ids)
                         summary["sessions_processed"] += 1
                         summary["turns_sent"] += len(messages)
+                        turns_budget -= len(messages)
                         logger.info(
-                            "Session %s: sent %d turns to Graphiti",
+                            "Session %s: sent %d turns to Graphiti (%d budget left)",
                             str(session_id)[:8],
                             len(messages),
+                            max(turns_budget, 0),
                         )
                     else:
                         summary["errors"].append(
@@ -131,15 +197,22 @@ class NightlyMemorySync:
                     logger.warning("Failed to process session %s: %s", session_id, e)
                     summary["errors"].append(f"Session {str(session_id)[:8]}: {e}")
 
+            summary["turns_remaining"] = max(total_turns - summary["turns_sent"], 0)
+            if summary["turns_remaining"] > 0:
+                logger.info(
+                    "%d turns remaining for next run", summary["turns_remaining"],
+                )
+
             # 3. Purge old messages
             purged = await self._purge_old_messages()
             summary["messages_purged"] = purged
 
             logger.info(
-                "Nightly sync complete: %d sessions processed, %d turns sent, "
-                "%d messages purged",
+                "Nightly sync complete: %d sessions, %d turns sent, "
+                "%d remaining, %d purged",
                 summary["sessions_processed"],
                 summary["turns_sent"],
+                summary["turns_remaining"],
                 summary["messages_purged"],
             )
 

@@ -385,6 +385,7 @@ class TestNightlySyncSendMessages:
         mock_client = MagicMock()
         mock_client.send_messages = AsyncMock(return_value={"success": True})
         sync._rag_client = mock_client
+        sync._ensure_graphiti_reachable = AsyncMock(return_value=True)
 
         sync._load_unsynced_turns = AsyncMock(return_value={
             "session-1": [
@@ -393,7 +394,7 @@ class TestNightlySyncSendMessages:
             ],
         })
         sync._mark_turns_synced = AsyncMock()
-        sync._purge_old_turns = AsyncMock(return_value=0)
+        sync._purge_old_messages = AsyncMock(return_value=0)
 
         summary = await sync.run()
 
@@ -423,6 +424,7 @@ class TestNightlySyncSendMessages:
         mock_client = MagicMock()
         mock_client.send_messages = AsyncMock(return_value={})  # empty = failure
         sync._rag_client = mock_client
+        sync._ensure_graphiti_reachable = AsyncMock(return_value=True)
 
         sync._load_unsynced_turns = AsyncMock(return_value={
             "session-1": [
@@ -430,12 +432,107 @@ class TestNightlySyncSendMessages:
             ],
         })
         sync._mark_turns_synced = AsyncMock()
-        sync._purge_old_turns = AsyncMock(return_value=0)
+        sync._purge_old_messages = AsyncMock(return_value=0)
 
         summary = await sync.run()
 
         sync._mark_turns_synced.assert_not_called()
         assert summary["sessions_processed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_turn_cap_limits_processing(self):
+        """max_turns_per_run caps how many turns are processed per run."""
+        mock_settings = MagicMock()
+        mock_settings.memory.enabled = True
+        mock_settings.memory.purge_days = 30
+
+        with patch("atlas_brain.config.settings", mock_settings):
+            from atlas_brain.jobs.nightly_memory_sync import NightlyMemorySync
+            sync = NightlyMemorySync(purge_days=30, max_turns_per_run=3)
+
+        mock_client = MagicMock()
+        mock_client.send_messages = AsyncMock(return_value={"success": True})
+        sync._rag_client = mock_client
+        sync._ensure_graphiti_reachable = AsyncMock(return_value=True)
+
+        # 3 sessions with 2 turns each = 6 total, but cap is 3
+        sync._load_unsynced_turns = AsyncMock(return_value={
+            "session-1": [
+                {"id": "t1", "role": "user", "content": "Hello", "speaker_id": None, "created_at": None, "metadata": None},
+                {"id": "t2", "role": "assistant", "content": "Hi!", "speaker_id": None, "created_at": None, "metadata": None},
+            ],
+            "session-2": [
+                {"id": "t3", "role": "user", "content": "Bye", "speaker_id": None, "created_at": None, "metadata": None},
+                {"id": "t4", "role": "assistant", "content": "Later!", "speaker_id": None, "created_at": None, "metadata": None},
+            ],
+            "session-3": [
+                {"id": "t5", "role": "user", "content": "Test", "speaker_id": None, "created_at": None, "metadata": None},
+                {"id": "t6", "role": "assistant", "content": "OK!", "speaker_id": None, "created_at": None, "metadata": None},
+            ],
+        })
+        sync._mark_turns_synced = AsyncMock()
+        sync._purge_old_messages = AsyncMock(return_value=0)
+
+        summary = await sync.run()
+
+        # Should process session-1 (2 turns) + session-2 (2 turns, budget goes to -1)
+        # but session-3 should be skipped (budget exhausted)
+        assert summary["turns_sent"] == 4
+        assert summary["sessions_processed"] == 2
+        assert summary["turns_remaining"] == 2
+        assert mock_client.send_messages.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_preflight_unreachable_aborts_sync(self):
+        """When Graphiti is unreachable and restart fails, sync aborts."""
+        mock_settings = MagicMock()
+        mock_settings.memory.enabled = True
+        mock_settings.memory.purge_days = 30
+
+        with patch("atlas_brain.config.settings", mock_settings):
+            from atlas_brain.jobs.nightly_memory_sync import NightlyMemorySync
+            sync = NightlyMemorySync(purge_days=30)
+
+        sync._ensure_graphiti_reachable = AsyncMock(return_value=False)
+        sync._load_unsynced_turns = AsyncMock()
+
+        summary = await sync.run()
+
+        assert "Graphiti unreachable" in summary["errors"][0]
+        sync._load_unsynced_turns.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_preflight_auto_recovery(self):
+        """Pre-flight restarts container and retries when Graphiti is down."""
+        mock_settings = MagicMock()
+        mock_settings.memory.enabled = True
+        mock_settings.memory.purge_days = 30
+        mock_settings.memory.base_url = "http://localhost:8001"
+
+        with patch("atlas_brain.config.settings", mock_settings):
+            from atlas_brain.jobs.nightly_memory_sync import NightlyMemorySync
+            sync = NightlyMemorySync(purge_days=30)
+
+        # First ping fails, then succeeds after restart
+        call_count = 0
+        async def mock_ping(url):
+            nonlocal call_count
+            call_count += 1
+            return call_count > 1  # fail first, pass after
+
+        sync._ping_graphiti = staticmethod(mock_ping)
+
+        with patch(
+            "atlas_brain.jobs.nightly_memory_sync.subprocess.run"
+        ) as mock_run, patch(
+            "atlas_brain.jobs.nightly_memory_sync.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            result = await sync._ensure_graphiti_reachable()
+
+        assert result is True
+        mock_run.assert_called_once()
+        assert "restart" in str(mock_run.call_args)
 
 
 # ===================================================================
