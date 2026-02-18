@@ -177,6 +177,44 @@ class TestGetTemporalContextResults:
 
 
 # ---------------------------------------------------------------------------
+# TestGetTemporalContext -- disabled via config
+# ---------------------------------------------------------------------------
+
+
+class TestGetTemporalContextDisabled:
+    """Test that temporal context is skipped when disabled via config."""
+
+    @pytest.mark.asyncio
+    async def test_disabled_returns_empty(self):
+        from atlas_brain.orchestration.temporal import get_temporal_context
+
+        with patch("atlas_brain.orchestration.temporal.settings") as mock_settings:
+            mock_settings.temporal.enabled = False
+            result = await get_temporal_context()
+
+        assert result == ""
+
+    @pytest.mark.asyncio
+    async def test_disabled_skips_db(self):
+        """DB pool should never be touched when disabled."""
+        from atlas_brain.orchestration.temporal import get_temporal_context
+
+        pool = _make_pool(rows=[
+            {"person_name": "Juan", "pattern_type": "wake_up", "median_minutes": 420},
+        ])
+
+        with (
+            patch("atlas_brain.orchestration.temporal.settings") as mock_settings,
+            patch(_PATCH_DB_POOL, return_value=pool),
+        ):
+            mock_settings.temporal.enabled = False
+            result = await get_temporal_context()
+
+        assert result == ""
+        pool.fetch.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # TestGetTemporalContext -- empty / not initialized
 # ---------------------------------------------------------------------------
 

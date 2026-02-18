@@ -11,6 +11,7 @@ import logging
 import time as _time
 from datetime import date
 
+from ..config import settings
 from ..utils.time import format_minutes
 
 logger = logging.getLogger("atlas.orchestration.temporal")
@@ -18,21 +19,30 @@ logger = logging.getLogger("atlas.orchestration.temporal")
 # Cache: (date, day_of_week, min_samples) -> formatted string
 _cache: dict[tuple[date, int, int], str] = {}
 
-# Negative-result cache: suppress DB retries for 60 s after a failure
+# Negative-result cache: suppress DB retries after a failure
 _failure_until: float = 0.0
 
 _DAY_ABBR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
-async def get_temporal_context(*, min_samples: int = 5) -> str:
+async def get_temporal_context(*, min_samples: int | None = None) -> str:
     """Return a compact natural-language summary of today's learned routines.
 
     Args:
         min_samples: Minimum sample_count required per pattern row.
+                     Defaults to settings.temporal.min_samples.
 
     Fail-open: returns empty string on any error or if no patterns exist.
     """
     global _failure_until
+
+    cfg = settings.temporal
+
+    if not cfg.enabled:
+        return ""
+
+    if min_samples is None:
+        min_samples = cfg.min_samples
 
     try:
         # Short-circuit if we recently failed (avoid DB hammering)
@@ -90,6 +100,6 @@ async def get_temporal_context(*, min_samples: int = 5) -> str:
         return result
 
     except Exception as e:
-        _failure_until = _time.monotonic() + 60
+        _failure_until = _time.monotonic() + cfg.failure_cooldown
         logger.debug("Could not build temporal context: %s", e)
         return ""

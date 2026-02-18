@@ -1408,6 +1408,16 @@ class EscalationConfig(BaseSettings):
     broadcast_occupancy: bool = Field(default=True, description="Broadcast occupancy state changes to edge nodes")
 
 
+class TemporalPatternConfig(BaseSettings):
+    """Temporal pattern context configuration."""
+
+    model_config = SettingsConfigDict(env_prefix="ATLAS_TEMPORAL_", env_file=".env", extra="ignore")
+
+    enabled: bool = Field(default=True, description="Enable temporal pattern context in LLM prompts")
+    min_samples: int = Field(default=5, ge=1, le=100, description="Minimum sample count per pattern row")
+    failure_cooldown: float = Field(default=60.0, ge=0.0, le=600.0, description="Seconds to suppress DB retries after failure")
+
+
 class Settings(BaseSettings):
     """Application-wide settings."""
 
@@ -1479,6 +1489,7 @@ class Settings(BaseSettings):
     edge: EdgeConfig = Field(default_factory=EdgeConfig)
     autonomous: AutonomousConfig = Field(default_factory=AutonomousConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
+    temporal: TemporalPatternConfig = Field(default_factory=TemporalPatternConfig)
     openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
     ftl_tracing: FTLTracingConfig = Field(default_factory=FTLTracingConfig)
 

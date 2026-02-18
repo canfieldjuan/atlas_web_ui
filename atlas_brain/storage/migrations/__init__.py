@@ -5,6 +5,7 @@ Tracks applied migrations in `schema_migrations` table to avoid re-running.
 """
 
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger("atlas.storage.migrations")
@@ -31,8 +32,10 @@ async def _get_applied_migrations(pool) -> set[str]:
 
 async def _record_migration(pool, filename: str) -> None:
     """Record that a migration has been applied."""
-    # Extract version number from filename prefix (e.g. '025_temporal_patterns.sql' -> 25)
-    version = int(filename.split("_", 1)[0])
+    # Extract leading digits from filename prefix (e.g. '025_temporal_patterns.sql' -> 25)
+    prefix = filename.split("_", 1)[0]
+    match = re.match(r"\d+", prefix)
+    version = int(match.group()) if match else 0
     name = filename.removesuffix(".sql")
     await pool.execute(
         "INSERT INTO schema_migrations (version, name) VALUES ($1, $2) ON CONFLICT (version) DO NOTHING",
