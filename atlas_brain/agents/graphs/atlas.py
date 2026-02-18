@@ -896,6 +896,15 @@ async def _generate_llm_response(
     except Exception as e:
         logger.debug("Could not build awareness context: %s", e)
 
+    # Append learned temporal patterns (routines)
+    try:
+        from ...orchestration.temporal import get_temporal_context
+        temporal = await get_temporal_context()
+        if temporal:
+            system_parts.append(temporal)
+    except Exception:
+        pass
+
     # Add user profile from MemoryService context
     if mem_ctx.user_name:
         system_parts.append(f"The user's name is {mem_ctx.user_name}.")

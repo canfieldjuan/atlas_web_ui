@@ -21,12 +21,7 @@ _notified_anomalies: set[str] = set()
 _MAX_DEDUP_ENTRIES = 200
 
 
-def _format_time(minutes: int) -> str:
-    """Format minutes-since-midnight as human-readable time."""
-    h, m = divmod(minutes, 60)
-    period = "AM" if h < 12 else "PM"
-    display_h = h % 12 or 12
-    return f"{display_h}:{m:02d} {period}"
+from ...utils.time import format_minutes as _format_time
 
 
 async def _send_alert(message: str, title: str = "Atlas Anomaly") -> None:
