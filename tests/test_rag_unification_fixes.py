@@ -264,6 +264,7 @@ class TestRetrieveMemoryTimeout:
         mock_classifier = MagicMock()
         mock_classifier.classify.return_value = SimpleNamespace(
             use_rag=True, category="knowledge", reason="test", confidence=1.0,
+            entity_name=None,
         )
         mock_get_classifier = MagicMock(return_value=mock_classifier)
 
@@ -323,6 +324,7 @@ class TestRetrieveMemoryTimeout:
         mock_classifier = MagicMock()
         mock_classifier.classify.return_value = SimpleNamespace(
             use_rag=True, category="knowledge", reason="test", confidence=1.0,
+            entity_name=None,
         )
         mock_get_classifier = MagicMock(return_value=mock_classifier)
 

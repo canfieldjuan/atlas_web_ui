@@ -347,16 +347,53 @@ async def retrieve_memory(
                 return Command(update=update, goto="parse")
 
             # Search graphiti for structured sources
-            from ...memory.rag_client import get_rag_client
+            from ...memory.rag_client import get_rag_client, SearchResult
 
             client = get_rag_client()
-            search_result = await asyncio.wait_for(
-                client.search(
-                    input_text,
-                    max_facts=settings.memory.context_results,
-                ),
-                timeout=settings.memory.context_timeout,
-            )
+            entity_name = classification.entity_name
+
+            if entity_name:
+                # Parallel: vector search + entity edge traversal
+                search_coro = asyncio.wait_for(
+                    client.search(
+                        input_text,
+                        max_facts=settings.memory.context_results,
+                    ),
+                    timeout=settings.memory.context_timeout,
+                )
+                traversal_coro = asyncio.wait_for(
+                    client.get_entity_edges(entity_name),
+                    timeout=settings.memory.context_timeout,
+                )
+                search_result, traversal_result = await asyncio.gather(
+                    search_coro, traversal_coro, return_exceptions=True,
+                )
+
+                # Handle exceptions from gather
+                if isinstance(search_result, Exception):
+                    logger.warning("Search failed in parallel: %s", search_result)
+                    search_result = SearchResult()
+                if isinstance(traversal_result, Exception):
+                    logger.warning("Traversal failed in parallel: %s", traversal_result)
+                    traversal_result = SearchResult()
+
+                # Merge: search facts first, then unique traversal facts
+                seen = {f.uuid for f in search_result.facts if f.uuid}
+                merged = list(search_result.facts)
+                for fact in traversal_result.facts:
+                    if fact.uuid and fact.uuid not in seen:
+                        merged.append(fact)
+                        seen.add(fact.uuid)
+                search_result = SearchResult(facts=merged)
+            else:
+                # No entity detected: existing search-only path
+                search_result = await asyncio.wait_for(
+                    client.search(
+                        input_text,
+                        max_facts=settings.memory.context_results,
+                    ),
+                    timeout=settings.memory.context_timeout,
+                )
 
             memory_ms = (time.perf_counter() - start_time) * 1000
             logger.debug(

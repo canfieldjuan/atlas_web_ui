@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
+from urllib.parse import quote
 
 from ..config import settings
 
@@ -154,6 +155,58 @@ class RAGClient:
             return SearchResult()
         except Exception as e:
             logger.error("RAG search error: %s", e)
+            return SearchResult()
+
+    async def get_entity_edges(
+        self,
+        entity_name: str,
+        group_id: Optional[str] = None,
+        max_edges: int = 20,
+    ) -> SearchResult:
+        """
+        Retrieve all edges (relationships) for a named entity via graph traversal.
+
+        Complements vector search by returning ALL known facts about an entity
+        rather than just the top-k similar ones.
+
+        Args:
+            entity_name: Entity name to look up (e.g. "Juan")
+            group_id: Group ID to search within
+            max_edges: Maximum edges to return
+
+        Returns:
+            SearchResult with facts from entity edges
+        """
+        if not settings.memory.enabled:
+            return SearchResult()
+
+        try:
+            gid = group_id or settings.memory.group_id
+            client = await self._get_client()
+            resp = await client.get(
+                f"/entities/{quote(entity_name, safe='')}/edges",
+                params={"group_ids": gid},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+            facts = []
+            for edge in data.get("edges", [])[:max_edges]:
+                facts.append(SearchSource(
+                    uuid=edge.get("uuid", ""),
+                    name=edge.get("name", ""),
+                    fact=edge.get("fact", ""),
+                    confidence=edge.get("score", 0.5),
+                    created_at=edge.get("created_at"),
+                    expired_at=edge.get("expired_at"),
+                ))
+            return SearchResult(facts=facts)
+
+        except httpx.RequestError as e:
+            logger.warning("Entity edge retrieval failed (connection): %s", e)
+            return SearchResult()
+        except Exception as e:
+            logger.warning("Entity edge retrieval failed: %s", e)
             return SearchResult()
 
     async def enhance_prompt(
