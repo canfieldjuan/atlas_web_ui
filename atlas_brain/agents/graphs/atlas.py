@@ -828,6 +828,9 @@ async def _generate_llm_response(
     # Gather unified context via MemoryService (history + profile + token budget).
     # Skip RAG here if retrieve_memory already fetched it to avoid a duplicate
     # graphiti search call.
+    # NOTE: When RAG is skipped (has_retrieved=True), no source tracking occurs
+    # and correction feedback is unavailable for this turn. The voice streaming
+    # path (launcher.py) always uses include_rag=True and is unaffected.
     has_retrieved = bool(retrieved_context)
     svc = get_memory_service()
     gather_started = time.perf_counter()
@@ -1102,12 +1105,26 @@ class AtlasAgentGraph:
             Result dict with response, action_type, timing, etc.
         """
         start_time = time.perf_counter()
+        effective_session = session_id or self._session_id
+
+        # Pre-pop stashed RAG usage_ids before the graph runs.
+        # Must happen before _generate_llm_response can overwrite the stash
+        # with the current turn's sources.
+        prev_rag_usage_ids: list = []
+        if effective_session:
+            try:
+                from ...memory.feedback import get_feedback_service
+                prev_rag_usage_ids = get_feedback_service().pop_session_usage(
+                    effective_session,
+                )
+            except Exception:
+                pass
 
         # Build initial state
         initial_state: AtlasAgentState = {
             "input_text": input_text,
             "input_type": kwargs.get("input_type", "text"),
-            "session_id": session_id or self._session_id,
+            "session_id": effective_session,
             "speaker_id": speaker_id,
             "runtime_context": kwargs.get("runtime_context", {}),
             "messages": [],
@@ -1132,8 +1149,8 @@ class AtlasAgentGraph:
 
         total_ms = (time.perf_counter() - start_time) * 1000
 
-        # Store conversation turn
-        await self._store_turn(final_state)
+        # Store conversation turn (pass pre-popped usage_ids for correction feedback)
+        await self._store_turn(final_state, prev_rag_usage_ids=prev_rag_usage_ids)
 
         # Build result
         return {
@@ -1170,7 +1187,11 @@ class AtlasAgentGraph:
             },
         }
 
-    async def _store_turn(self, state: AtlasAgentState) -> None:
+    async def _store_turn(
+        self,
+        state: AtlasAgentState,
+        prev_rag_usage_ids: Optional[list] = None,
+    ) -> None:
         """Store conversation turn to memory."""
         session_id = state.get("session_id")
         if not session_id:
@@ -1199,19 +1220,22 @@ class AtlasAgentGraph:
                 user_metadata = signal.to_metadata() or None
                 if signal.correction:
                     assistant_metadata = {"memory_quality": {"preceded_by_correction": True}}
-                    # Downvote RAG sources from the turn being corrected
-                    try:
-                        from ...memory.feedback import get_feedback_service
-                        fb = get_feedback_service()
-                        stale_ids = fb.pop_session_usage(session_id)
-                        if stale_ids:
-                            await fb.record_not_helpful(stale_ids, feedback_type="correction")
+                    # Downvote RAG sources from the turn being corrected.
+                    # Uses pre-popped ids from run() to avoid the timing bug
+                    # where _generate_llm_response overwrites the stash before
+                    # we can pop here.
+                    if prev_rag_usage_ids:
+                        try:
+                            from ...memory.feedback import get_feedback_service
+                            await get_feedback_service().record_not_helpful(
+                                prev_rag_usage_ids, feedback_type="correction",
+                            )
                             logger.info(
                                 "Downvoted %d RAG sources on correction for session %s",
-                                len(stale_ids), session_id,
+                                len(prev_rag_usage_ids), session_id,
                             )
-                    except Exception as e:
-                        logger.debug("Correction feedback failed: %s", e)
+                        except Exception as e:
+                            logger.debug("Correction feedback failed: %s", e)
                     logger.info(
                         "Quality signal: correction=%s pattern=%s for session %s",
                         signal.correction, signal.correction_pattern, session_id,

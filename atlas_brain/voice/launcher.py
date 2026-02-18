@@ -271,6 +271,17 @@ async def _stream_llm_response(
     # Gather unified context via MemoryService (history + profile + token budget)
     session_id = context_dict.get("session_id")
     speaker_name = context_dict.get("speaker_name")
+
+    # Pre-pop previous turn's stashed RAG usage_ids before gather_context
+    # can overwrite the stash with this turn's sources.
+    prev_usage_ids: list = []
+    if session_id:
+        try:
+            from ..memory.feedback import get_feedback_service
+            prev_usage_ids = get_feedback_service().pop_session_usage(session_id)
+        except Exception:
+            pass
+
     svc = get_memory_service()
     mem_ctx = await svc.gather_context(
         query=transcript,
@@ -282,7 +293,7 @@ async def _stream_llm_response(
         max_history=6,
     )
 
-    # Stash RAG usage_ids for correction feedback loop
+    # Stash this turn's RAG usage_ids for the next turn's correction detection
     if mem_ctx.feedback_context and mem_ctx.feedback_context.usage_ids and session_id:
         try:
             from ..memory.feedback import get_feedback_service
@@ -359,6 +370,7 @@ async def _stream_llm_response(
             asyncio.ensure_future(_persist_streaming_turns(
                 session_id, transcript, full_response, speaker_name,
                 speaker_uuid=speaker_uuid,
+                prev_usage_ids=prev_usage_ids,
             ))
 
         return sentence_count > 0
@@ -373,6 +385,7 @@ async def _persist_streaming_turns(
     assistant_text: str,
     speaker_name: Optional[str] = None,
     speaker_uuid: Optional[str] = None,
+    prev_usage_ids: Optional[list] = None,
 ) -> None:
     """Persist conversation turns from streaming LLM to database and GraphRAG."""
     from ..memory.service import get_memory_service
@@ -390,19 +403,21 @@ async def _persist_streaming_turns(
         user_metadata = signal.to_metadata() or None
         if signal.correction:
             assistant_metadata = {"memory_quality": {"preceded_by_correction": True}}
-            # Downvote RAG sources from the turn being corrected
-            try:
-                from ..memory.feedback import get_feedback_service
-                fb = get_feedback_service()
-                stale_ids = fb.pop_session_usage(session_id)
-                if stale_ids:
-                    await fb.record_not_helpful(stale_ids, feedback_type="correction")
+            # Downvote RAG sources from the turn being corrected.
+            # Uses pre-popped ids passed from _stream_llm_response to avoid
+            # the timing bug where gather_context overwrites the stash.
+            if prev_usage_ids:
+                try:
+                    from ..memory.feedback import get_feedback_service
+                    await get_feedback_service().record_not_helpful(
+                        prev_usage_ids, feedback_type="correction",
+                    )
                     logger.info(
                         "Downvoted %d RAG sources on correction for session %s",
-                        len(stale_ids), session_id,
+                        len(prev_usage_ids), session_id,
                     )
-            except Exception as e:
-                logger.debug("Correction feedback failed: %s", e)
+                except Exception as e:
+                    logger.debug("Correction feedback failed: %s", e)
     except Exception as e:
         logger.debug("Quality detection skipped in streaming: %s", e)
 

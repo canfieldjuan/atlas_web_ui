@@ -50,6 +50,9 @@ class FeedbackService:
     - Source citation formatting for responses
     """
 
+    _STASH_MAX_SESSIONS = 1000
+    _STASH_EVICT_COUNT = 500
+
     def __init__(self):
         self._enabled = db_settings.enabled
         self._session_usage: dict[str, list[UUID]] = {}
@@ -60,8 +63,8 @@ class FeedbackService:
             return
         self._session_usage[session_id] = usage_ids
         # Evict oldest entries if cache grows too large
-        if len(self._session_usage) > 1000:
-            to_evict = list(self._session_usage.keys())[:500]
+        if len(self._session_usage) > self._STASH_MAX_SESSIONS:
+            to_evict = list(self._session_usage.keys())[:self._STASH_EVICT_COUNT]
             for k in to_evict:
                 self._session_usage.pop(k, None)
 
