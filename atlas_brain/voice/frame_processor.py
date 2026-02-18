@@ -69,6 +69,8 @@ class FrameProcessor:
         conversation_asr_holdoff_ms: int = 1000,
         wake_buffer_frames: int = 5,
         asr_quiet_limit: int = 10,
+        on_early_silence: Optional[Callable[[str], None]] = None,
+        conversation_early_silence_ms: int = 600,
     ):
         self.wake_predict = wake_predict
         self.wake_threshold = wake_threshold
@@ -153,6 +155,16 @@ class FrameProcessor:
         self._orig_asr_holdoff_ms = segmenter._asr_holdoff_ms
         self._orig_min_speech_frames = segmenter._min_speech_frames
 
+        # Early silence detection for conversation mode (overlapped prefill)
+        # NOTE: We maintain our own silence counter (_recording_silence_frames)
+        # because the segmenter's silence_counter is reset by the sliding window
+        # gate in _should_finalize(), making it unreliable for early detection.
+        frame_ms = 1000 * segmenter.block_size / segmenter.sample_rate  # ~80ms
+        self._early_silence_frames = max(1, int(conversation_early_silence_ms / frame_ms))
+        self._early_silence_fired = False
+        self._recording_silence_frames = 0
+        self.on_early_silence = on_early_silence
+
         # Warn if gain is too high (causes clipping that destroys wake word patterns)
         if audio_gain > 5.0:
             logger.warning(
@@ -205,6 +217,9 @@ class FrameProcessor:
         self._turn_count = 0
         # Clear speaker embedding on reset
         self._wake_speaker_embedding = None
+        # Reset early silence state
+        self._early_silence_fired = False
+        self._recording_silence_frames = 0
 
     def _connect_streaming_asr(self, context: str = "") -> bool:
         """Connect streaming ASR client if available.
@@ -385,6 +400,8 @@ class FrameProcessor:
                         self._conversation_silence_counter = 0
                         self.state = "recording"
                         self._came_from_conversation = True
+                        self._early_silence_fired = False
+                        self._recording_silence_frames = 0
                     self.segmenter.reset()
                     # Widen thresholds for conversation recording
                     self.segmenter.update_thresholds(
@@ -434,6 +451,8 @@ class FrameProcessor:
                     self._conversation_silence_counter = 0
                     self.state = "recording"
                     self._came_from_conversation = True
+                    self._early_silence_fired = False
+                    self._recording_silence_frames = 0
                 self.segmenter.reset()
                 # Widen thresholds for conversation recording
                 self.segmenter.update_thresholds(
@@ -488,6 +507,25 @@ class FrameProcessor:
 
             speech_prob = self._get_speech_prob(frame_bytes)
             finalize = self.segmenter.add_frame(frame_bytes, speech_prob, asr_active)
+
+            # Early silence detection — start preparation during conversation silence.
+            # Track raw silence ourselves (segmenter's counter is reset by sliding window).
+            if self._came_from_conversation and self.on_early_silence is not None:
+                if speech_prob <= self.segmenter._speech_threshold and not asr_active:
+                    self._recording_silence_frames += 1
+                else:
+                    self._recording_silence_frames = 0
+
+                if (not self._early_silence_fired
+                        and self._recording_silence_frames >= self._early_silence_frames):
+                    self._early_silence_fired = True
+                    partial = self._last_partial
+                    logger.info(
+                        "Early silence at %d frames, triggering prep (partial: %s)",
+                        self._recording_silence_frames,
+                        partial[:50] if partial else "(none)",
+                    )
+                    self.on_early_silence(partial)
 
             # Log recording progress periodically
             if self.debug_logging and len(self.segmenter.frames) % 20 == 0:

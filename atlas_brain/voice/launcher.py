@@ -29,6 +29,12 @@ _voice_pipeline: Optional[VoicePipeline] = None
 _voice_thread: Optional[threading.Thread] = None
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
 
+# Early preparation cache for overlapped prefill during conversation silence
+import time as _time
+
+_early_prep_cache: dict = {}
+_early_prep_lock = threading.Lock()
+
 
 def _notify_ui(state: str, **kwargs) -> None:
     """Broadcast voice pipeline state to connected UI WebSocket sessions."""
@@ -142,7 +148,37 @@ def _create_streaming_agent_runner():
                         workflow.workflow_type
                     )
 
-            if settings.intent_router.enabled and not has_active_workflow:
+            # Check early preparation cache (from conversation silence)
+            cached_prep = None
+            with _early_prep_lock:
+                if _early_prep_cache and _time.monotonic() - _early_prep_cache.get("ts", 0) < 10:
+                    cached_partial = _early_prep_cache.get("partial", "")
+                    # Reuse if final transcript is similar to cached partial
+                    if (transcript.lower().startswith(cached_partial.lower()[:20])
+                            or cached_partial.lower().startswith(transcript.lower()[:20])):
+                        cached_prep = _early_prep_cache.copy()
+                        logger.info("Using early prep cache (partial=%s)", cached_partial[:30])
+                _early_prep_cache.clear()  # Always clear after check
+
+            if cached_prep and not has_active_workflow:
+                route_result = cached_prep["route_result"]
+                _last_route_result["result"] = route_result
+                threshold = settings.intent_router.confidence_threshold
+                if route_result.action_category == "conversation" and route_result.confidence >= threshold:
+                    use_streaming = True
+                    logger.info(
+                        "Streaming path: conversation via early prep (conf=%.2f)",
+                        route_result.confidence
+                    )
+                elif route_result.action_category != "conversation":
+                    logger.info(
+                        "Non-streaming path via early prep: %s/%s (conf=%.2f)",
+                        route_result.action_category,
+                        route_result.tool_name or "none",
+                        route_result.confidence
+                    )
+                # Prefill already triggered by early silence
+            elif settings.intent_router.enabled and not has_active_workflow:
                 route_result = await route_query(transcript)
                 _last_route_result["result"] = route_result
                 threshold = settings.intent_router.confidence_threshold
@@ -173,6 +209,7 @@ def _create_streaming_agent_runner():
             if use_streaming:
                 success = await _stream_llm_response(
                     transcript, context_dict, _tracked_on_sentence,
+                    cached_mem_ctx=cached_prep.get("mem_ctx") if cached_prep else None,
                 )
                 if not success:
                     # Discard partial sentences before running fallback agent
@@ -255,6 +292,7 @@ async def _stream_llm_response(
     transcript: str,
     context_dict: Dict[str, Any],
     on_sentence: Callable[[str], None],
+    cached_mem_ctx: Optional[Any] = None,
 ) -> bool:
     """Stream LLM response for conversation queries.
 
@@ -286,15 +324,19 @@ async def _stream_llm_response(
             pass
 
     svc = get_memory_service()
-    mem_ctx = await svc.gather_context(
-        query=transcript,
-        session_id=session_id,
-        user_id=context_dict.get("speaker_id"),
-        include_rag=True,
-        include_history=True,
-        include_physical=False,
-        max_history=6,
-    )
+    if cached_mem_ctx is not None:
+        mem_ctx = cached_mem_ctx
+        logger.info("Using cached context from early prep")
+    else:
+        mem_ctx = await svc.gather_context(
+            query=transcript,
+            session_id=session_id,
+            user_id=context_dict.get("speaker_id"),
+            include_rag=True,
+            include_history=True,
+            include_physical=False,
+            max_history=6,
+        )
 
     # Stash this turn's RAG usage_ids for the next turn's correction detection
     if mem_ctx.feedback_context and mem_ctx.feedback_context.usage_ids and session_id:
@@ -561,6 +603,53 @@ def _create_prefill_runner():
     return runner
 
 
+def _create_early_prep_runner():
+    """Create runner that pre-gathers context during conversation silence."""
+
+    def runner(partial_transcript: str, session_id: Optional[str] = None):
+        if not partial_transcript or _event_loop is None:
+            return
+
+        async def _gather():
+            from ..memory.service import get_memory_service
+            from ..services.intent_router import route_query
+
+            # Intent routing on partial transcript
+            route_result = await route_query(partial_transcript)
+            if route_result.action_category != "conversation":
+                logger.debug("Early prep: non-conversation intent (%s), skipping",
+                             route_result.action_category)
+                return  # Not conversation, don't bother caching
+
+            # Gather context using partial transcript
+            svc = get_memory_service()
+            mem_ctx = await svc.gather_context(
+                query=partial_transcript,
+                session_id=session_id,
+                include_rag=True,
+                include_history=True,
+                include_physical=False,
+                max_history=6,
+            )
+            with _early_prep_lock:
+                _early_prep_cache.clear()
+                _early_prep_cache.update({
+                    "partial": partial_transcript,
+                    "route_result": route_result,
+                    "mem_ctx": mem_ctx,
+                    "ts": _time.monotonic(),
+                })
+            logger.info("Early prep cached (partial=%s)", partial_transcript[:40])
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(_gather(), _event_loop)
+            future.result(timeout=5.0)
+        except Exception as e:
+            logger.debug("Early prep gather failed: %s", e)
+
+    return runner
+
+
 def _create_kokoro_tts(tts_cfg, voice_cfg):
     """Create Kokoro TTS engine with Piper fallback."""
     try:
@@ -682,6 +771,7 @@ def create_voice_pipeline(event_loop: Optional[asyncio.AbstractEventLoop] = None
     agent_runner = _create_agent_runner()
     streaming_agent_runner = _create_streaming_agent_runner()
     prefill_runner = _create_prefill_runner()
+    early_prep_runner = _create_early_prep_runner()
 
     # Initialize speaker ID service if enabled
     speaker_id_service = None
@@ -831,6 +921,9 @@ def create_voice_pipeline(event_loop: Optional[asyncio.AbstractEventLoop] = None
         wake_confirmation_enabled=cfg.wake_confirmation_enabled,
         wake_confirmation_freq=cfg.wake_confirmation_freq,
         wake_confirmation_duration_ms=cfg.wake_confirmation_duration_ms,
+        # Early preparation during conversation silence
+        early_preparation_runner=early_prep_runner,
+        conversation_early_silence_ms=cfg.conversation_early_silence_ms,
     )
 
     return pipeline

@@ -615,8 +615,12 @@ class VoiceClientConfig(BaseSettings):
     # In conversation mode, users pause naturally between thoughts (~0.5-1s).
     # 800ms silence + 300ms hangover = ~1040ms before finalization, which avoids
     # cutting off mid-sentence pauses while staying responsive.
-    conversation_silence_ms: int = Field(default=800, description="Confirmation silence duration in conversation mode")
-    conversation_hangover_ms: int = Field(default=300, description="Hangover in conversation mode")
+    conversation_silence_ms: int = Field(default=2000, description="Confirmation silence duration in conversation mode")
+    conversation_hangover_ms: int = Field(default=500, description="Hangover in conversation mode")
+    conversation_early_silence_ms: int = Field(
+        default=600,
+        description="Silence duration to trigger early LLM preparation in conversation mode (ms)"
+    )
     conversation_max_command_seconds: int = Field(default=120, description="Max recording in conversation mode")
     conversation_window_frames: int = Field(default=20, description="Sliding window size for speech ratio (0=disabled)")
     conversation_silence_ratio: float = Field(default=0.15, description="Speech ratio below which silence counter engages")

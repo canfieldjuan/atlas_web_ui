@@ -733,6 +733,9 @@ class VoicePipeline:
         wake_confirmation_duration_ms: int = 80,
         # Turn limit warning
         conversation_turn_limit_phrase: str = "Say Hey Atlas to continue.",
+        # Early preparation during conversation silence
+        early_preparation_runner: Optional[Callable[[str], None]] = None,
+        conversation_early_silence_ms: int = 600,
     ):
         self.sample_rate = sample_rate
         self.event_loop = event_loop
@@ -760,6 +763,9 @@ class VoicePipeline:
         self._prefill_in_progress = False
         self._last_llm_call_time: float = 0.0
         self._prefill_cache_ttl = prefill_cache_ttl
+        self._early_prep_runner = early_preparation_runner
+        self._early_prep_in_progress = False
+        self._conversation_early_silence_ms = conversation_early_silence_ms
         self._filler_enabled = filler_enabled
         self._filler_delay = filler_delay_ms / 1000.0
         self._filler_phrases = filler_phrases or [
@@ -923,6 +929,8 @@ class VoicePipeline:
             conversation_asr_holdoff_ms=conversation_asr_holdoff_ms,
             wake_buffer_frames=wake_buffer_frames,
             asr_quiet_limit=asr_quiet_limit,
+            on_early_silence=self._on_early_silence,
+            conversation_early_silence_ms=conversation_early_silence_ms,
         )
 
         self.capture = AudioCapture(
@@ -1494,6 +1502,30 @@ class VoicePipeline:
             logger.warning("LLM prefill failed: %s", e)
         finally:
             self._prefill_in_progress = False
+
+    def _on_early_silence(self, partial: str):
+        """Start background preparation when conversation silence is detected early."""
+        # Start prefill (system prompt KV cache warming)
+        self.trigger_prefill()
+        # Start context gathering if runner provided
+        if self._early_prep_runner and not self._early_prep_in_progress:
+            self._early_prep_in_progress = True
+            thread = threading.Thread(
+                target=self._run_early_prep,
+                args=(partial, self.session_id),
+                daemon=True,
+                name="early-prep",
+            )
+            thread.start()
+
+    def _run_early_prep(self, partial: str, session_id: str):
+        """Execute early preparation runner in background."""
+        try:
+            self._early_prep_runner(partial, session_id)
+        except Exception as e:
+            logger.warning("Early preparation failed: %s", e)
+        finally:
+            self._early_prep_in_progress = False
 
     def _verify_speaker(self, pcm_bytes: bytes) -> bool:
         """
