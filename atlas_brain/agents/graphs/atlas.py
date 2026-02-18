@@ -381,7 +381,16 @@ async def retrieve_memory(
         except Exception as e:
             logger.warning("Memory retrieval failed: %s", e)
 
-    # Conversation + high confidence -> respond directly (even without memory)
+        # On failure, set empty list so gather_context doesn't retry
+        # the same slow/broken server (avoids 2x timeout latency)
+        memory_ms = (time.perf_counter() - start_time) * 1000
+        fail_update = {"retrieved_sources": [], "memory_ms": memory_ms}
+        if action_type == "conversation" and state.get("confidence", 0) >= conv_threshold:
+            return Command(update=fail_update, goto="respond")
+        return Command(update=fail_update, goto="parse")
+
+    # Memory disabled — don't set retrieved_sources so gather_context
+    # can still do its own search if include_rag is True
     if action_type == "conversation" and state.get("confidence", 0) >= conv_threshold:
         return Command(goto="respond")
 

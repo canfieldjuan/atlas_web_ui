@@ -146,7 +146,7 @@ class MemoryService:
                 logger.warning("Failed to get physical context: %s", e)
 
         # Get RAG context from GraphRAG
-        if pre_fetched_sources is not None:
+        if pre_fetched_sources is not None and include_rag:
             # Use pre-fetched sources (from retrieve_memory node) -- still track them
             try:
                 rag_result = EnhancedPromptResult(
