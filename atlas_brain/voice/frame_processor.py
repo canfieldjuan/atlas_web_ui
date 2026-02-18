@@ -186,6 +186,10 @@ class FrameProcessor:
                     rms_min_threshold, rms_adaptive, rms_above_ambient_factor)
         logger.info("  voice_filter: turn_limit=%s (max=%d), speaker_continuity=%s",
                     turn_limit_enabled, max_conversation_turns, speaker_continuity_enabled)
+        logger.info("  early_silence: frames=%d (%.0fms), callback=%s",
+                    self._early_silence_frames,
+                    self._early_silence_frames * (1000 * segmenter.block_size / segmenter.sample_rate),
+                    self.on_early_silence is not None)
 
     def reset(self):
         """Reset processor to listening state."""
