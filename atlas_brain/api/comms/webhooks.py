@@ -202,8 +202,33 @@ async def handle_inbound_call(request: Request):
         logger.info("Starting AI conversation for call %s (laml=%s)", call_id, use_laml)
 
         if use_laml:
-            # LaML: Use Atlas models via bidirectional WebSocket stream
-            # Prewarm LLM in background
+            # If a forward number is configured, skip AI and dial directly.
+            # SignalWire records both legs then fires the recording-status webhook.
+            if comms_settings.forward_to_number:
+                logger.info(
+                    "Forwarding call %s to %s",
+                    call_id,
+                    comms_settings.forward_to_number,
+                )
+                recording_attrs = ""
+                if comms_settings.record_calls:
+                    cb_url = (
+                        f"{comms_settings.webhook_base_url}"
+                        "/api/v1/comms/voice/recording-status"
+                    )
+                    recording_attrs = (
+                        f' record="record-from-answer-dual"'
+                        f' recordingStatusCallback="{cb_url}"'
+                        f' recordingStatusCallbackEvent="completed"'
+                    )
+                return laml_response(f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Dial{recording_attrs} timeout="30" answerOnBridge="true">
+        {comms_settings.forward_to_number}
+    </Dial>
+</Response>""")
+
+            # No forward number - use Atlas AI via bidirectional WebSocket stream
             asyncio.create_task(prewarm_llm())
 
             # Pre-connect PersonaPlex in background (takes ~6s)
@@ -220,8 +245,6 @@ async def handle_inbound_call(request: Request):
 
             logger.info("LaML stream URL: %s", stream_url)
 
-            # Return LaML - connect directly to Atlas for unified voice
-            # Greeting will be played via Atlas TTS (Kokoro) when stream starts
             recording_attrs = ""
             if comms_settings.record_calls:
                 cb_url = (

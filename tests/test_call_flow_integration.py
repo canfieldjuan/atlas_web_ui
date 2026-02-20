@@ -173,6 +173,7 @@ class TestInboundCallRecording:
             mock_comms.record_calls = True
             mock_comms.webhook_base_url = WEBHOOK_BASE
             mock_comms.personaplex_enabled = False
+            mock_comms.forward_to_number = "+13095551234"
 
             response = await handle_inbound_call(request)
 
@@ -180,10 +181,12 @@ class TestInboundCallRecording:
         assert 'record="record-from-answer-dual"' in body
         assert "recording-status" in body
         assert WEBHOOK_BASE in body
+        assert "<Dial" in body
+        assert "+13095551234" in body
 
     @pytest.mark.asyncio
     async def test_laml_no_recording_when_disabled(self):
-        """Inbound call returns plain <Connect> when record_calls=False."""
+        """Inbound call returns plain <Dial> without recording when record_calls=False."""
         from atlas_brain.api.comms.webhooks import handle_inbound_call
 
         mock_context = _make_context()
@@ -214,14 +217,16 @@ class TestInboundCallRecording:
             mock_comms.record_calls = False
             mock_comms.webhook_base_url = WEBHOOK_BASE
             mock_comms.personaplex_enabled = False
+            mock_comms.forward_to_number = "+13095551234"
 
             response = await handle_inbound_call(request)
 
         body = response.body.decode()
         assert "record=" not in body
         assert "recordingStatusCallback" not in body
-        # Stream should still be present
-        assert "<Stream" in body
+        # Forward dial should be present without recording
+        assert "<Dial" in body
+        assert "+13095551234" in body
 
 
 # ---------------------------------------------------------------------------

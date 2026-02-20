@@ -189,6 +189,13 @@ class CommsConfig(BaseSettings):
     audio_sample_rate: int = Field(default=8000, description="Audio sample rate for calls")
     audio_encoding: str = Field(default="mulaw", description="Audio encoding: mulaw, pcm")
 
+    # Call forwarding (forward inbound calls to your real phone number)
+    forward_to_number: str = Field(
+        default="",
+        description="Forward inbound calls to this E.164 number (e.g. +13095551234). "
+                    "When set, skips AI handling and forwards the call directly.",
+    )
+
     # Recording
     record_calls: bool = Field(default=False, description="Record calls for review")
     recording_storage_path: str = Field(default="recordings/", description="Path to store recordings")
