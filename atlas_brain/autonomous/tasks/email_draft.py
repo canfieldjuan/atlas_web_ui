@@ -19,6 +19,25 @@ from ...storage.models import ScheduledTask
 logger = logging.getLogger("atlas.autonomous.tasks.email_draft")
 
 
+# Senders that should never get auto-drafted replies (automated/no-reply)
+_SKIP_SENDER_PATTERNS = (
+    "noreply@", "no-reply@", "donotreply@", "do-not-reply@",
+    "mailer-daemon@", "postmaster@",
+    "notifications@", "notification@",
+    "alerts@", "alert@",
+    "cash@square.com", "venmo@venmo.com",
+    "service@paypal.com",
+)
+
+
+def _is_auto_sender(sender: str) -> bool:
+    """Check if the sender is an automated/no-reply address."""
+    email_part = sender.lower()
+    if "<" in email_part:
+        email_part = email_part.split("<")[1].split(">")[0]
+    return any(pattern in email_part for pattern in _SKIP_SENDER_PATTERNS)
+
+
 async def _get_draftable_emails() -> list[dict[str, Any]]:
     """Find action_required emails from the last 48h with no existing draft."""
     pool = get_db_pool()
@@ -32,6 +51,7 @@ async def _get_draftable_emails() -> list[dict[str, Any]]:
         SELECT pe.gmail_message_id, pe.sender, pe.subject, pe.category, pe.priority
         FROM processed_emails pe
         LEFT JOIN email_drafts ed ON pe.gmail_message_id = ed.gmail_message_id
+            AND ed.status IN ('pending', 'approved', 'sent')
         WHERE pe.priority = ANY($1::text[])
           AND pe.processed_at > CURRENT_TIMESTAMP - INTERVAL '48 hours'
           AND ed.id IS NULL
@@ -40,7 +60,8 @@ async def _get_draftable_emails() -> list[dict[str, Any]]:
         priorities,
     )
 
-    return [dict(r) for r in rows]
+    # Filter out automated/no-reply senders
+    return [dict(r) for r in rows if not _is_auto_sender(r["sender"])]
 
 
 async def _insert_draft(draft: dict[str, Any]) -> str:

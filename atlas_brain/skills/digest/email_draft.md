@@ -44,12 +44,14 @@ The `---` separator is required between subject and body.
 
 - NEVER start with "Thank you for reaching out" or "Thank you for your email"
 - NEVER start with "I hope this email finds you well"
-- Keep the reply **shorter than the original email**
+- Keep the reply **shorter than the original email**, but always substantive
+- NEVER reply with just "Got it" or a single acknowledgment -- always include a specific next step, date, or detail from the original
 - If the original asks multiple questions, address each one in order
 - If you cannot answer something, say so directly
 - Quote or reference specific details from their email to show it was read
 - Do NOT use markdown formatting -- plain text with line breaks only
 - Sign with the user's name
-- If the email requests scheduling, suggest checking availability
-- If the email requests payment or financial action, acknowledge and say it will be handled
-- If the email is a service notification requiring action, confirm the action will be taken
+- If the email requests scheduling, suggest checking availability and propose a specific timeframe
+- If the email requests payment or financial action, acknowledge the amount/deadline and confirm it will be handled by when
+- If the email is a service notification requiring action, state what action will be taken and by when
+- If the email contains forms, attachments, or documents to complete, confirm which ones and when they'll be submitted
