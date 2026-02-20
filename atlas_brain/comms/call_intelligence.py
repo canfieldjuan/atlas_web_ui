@@ -348,6 +348,10 @@ async def _notify_call_summary(
     if name:
         lines.append(f"Customer: {name}")
 
+    phone = extracted_data.get("customer_phone")
+    if phone:
+        lines.append(f"Phone: {phone}")
+
     intent = extracted_data.get("intent")
     if intent:
         lines.append(f"Intent: {intent.replace('_', ' ').title()}")
@@ -355,6 +359,23 @@ async def _notify_call_summary(
     services = extracted_data.get("services_mentioned")
     if services:
         lines.append(f"Services: {', '.join(services)}")
+
+    address = extracted_data.get("address")
+    if address:
+        lines.append(f"Address: {address}")
+
+    date = extracted_data.get("preferred_date")
+    time = extracted_data.get("preferred_time")
+    if date and time:
+        lines.append(f"Requested: {date} {time}")
+    elif date:
+        lines.append(f"Requested: {date}")
+    elif time:
+        lines.append(f"Requested: {time}")
+
+    notes = extracted_data.get("notes")
+    if notes:
+        lines.append(f"Notes: {notes}")
 
     if proposed_actions:
         actions_str = "; ".join(
