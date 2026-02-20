@@ -422,6 +422,14 @@ class ToolsConfig(BaseSettings):
     gmail_refresh_token: str | None = Field(default=None, description="Gmail OAuth refresh token")
     gmail_max_results: int = Field(default=20, ge=1, le=50, description="Max emails per digest")
     gmail_query: str = Field(default="is:unread newer_than:1d", description="Gmail search query")
+    gmail_body_max_chars: int = Field(
+        default=2000, ge=500, le=8000,
+        description="Max characters of email body text to include per message for LLM context",
+    )
+    gmail_dedup_retention_days: int = Field(
+        default=90, ge=7, le=365,
+        description="Days to keep processed email records before cleanup",
+    )
 
 
 class IntentConfig(BaseSettings):

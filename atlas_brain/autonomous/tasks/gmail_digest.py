@@ -1,19 +1,23 @@
 """
 Gmail digest builtin task.
 
-Fetches unread emails from Gmail API using OAuth2 and returns
-a structured summary.
+Fetches unread emails from Gmail API using OAuth2, extracts full body
+content, deduplicates against previously processed messages, and returns
+a structured summary for LLM synthesis.
 """
 
 import asyncio
+import base64
 import logging
 import time
+from html.parser import HTMLParser
 from typing import Any
 
 import httpx
 
 from ...config import settings
 from ...services.google_oauth import get_google_token_store
+from ...storage.database import get_db_pool
 from ...storage.models import ScheduledTask
 
 logger = logging.getLogger("atlas.autonomous.tasks.gmail_digest")
@@ -21,6 +25,148 @@ logger = logging.getLogger("atlas.autonomous.tasks.gmail_digest")
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 
+
+# ---------------------------------------------------------------------------
+# HTML-to-text helpers (stdlib, no external dependency)
+# ---------------------------------------------------------------------------
+
+class _HTMLTextExtractor(HTMLParser):
+    """Simple HTML-to-text extractor using stdlib HTMLParser."""
+
+    _BLOCK_TAGS = frozenset({
+        "p", "div", "br", "hr", "li", "tr", "h1", "h2", "h3",
+        "h4", "h5", "h6", "blockquote", "pre", "table",
+    })
+    _SKIP_TAGS = frozenset({"script", "style", "head"})
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+        if tag in self._BLOCK_TAGS and self._parts:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self._SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0:
+            self._parts.append(data)
+
+    def get_text(self) -> str:
+        text = "".join(self._parts)
+        # Collapse runs of whitespace but preserve paragraph breaks
+        lines = text.splitlines()
+        cleaned = []
+        for line in lines:
+            stripped = " ".join(line.split())
+            cleaned.append(stripped)
+        return "\n".join(cleaned).strip()
+
+
+def _html_to_text(html: str) -> str:
+    """Convert HTML to plain text using stdlib parser."""
+    extractor = _HTMLTextExtractor()
+    try:
+        extractor.feed(html)
+        return extractor.get_text()
+    except Exception:
+        # Fallback: strip tags crudely
+        import re
+        return re.sub(r"<[^>]+>", " ", html).strip()
+
+
+def _decode_body_data(data: str) -> str:
+    """Decode Gmail base64url-encoded body data to UTF-8 text."""
+    # Gmail uses URL-safe base64 without padding
+    padded = data + "=" * (4 - len(data) % 4) if len(data) % 4 else data
+    return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
+
+
+def _extract_body_parts(payload: dict) -> tuple[str, str]:
+    """
+    Recursively walk a Gmail message payload to extract body text.
+
+    Returns (plain_text, html_text). Either may be empty.
+    """
+    plain_parts: list[str] = []
+    html_parts: list[str] = []
+
+    def _walk(part: dict) -> None:
+        mime = part.get("mimeType", "")
+        body = part.get("body", {})
+        data = body.get("data")
+
+        if data:
+            decoded = _decode_body_data(data)
+            if mime == "text/plain":
+                plain_parts.append(decoded)
+            elif mime == "text/html":
+                html_parts.append(decoded)
+
+        for sub in part.get("parts", []):
+            _walk(sub)
+
+    _walk(payload)
+    return "\n".join(plain_parts), "\n".join(html_parts)
+
+
+# ---------------------------------------------------------------------------
+# Database helpers (dedup)
+# ---------------------------------------------------------------------------
+
+async def _get_processed_message_ids(msg_ids: list[str]) -> set[str]:
+    """Check which message IDs have already been processed."""
+    pool = get_db_pool()
+    if not pool.is_initialized or not msg_ids:
+        return set()
+
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT gmail_message_id FROM processed_emails
+            WHERE gmail_message_id = ANY($1::text[])
+            """,
+            msg_ids,
+        )
+        return {r["gmail_message_id"] for r in rows}
+    except Exception as e:
+        logger.warning("Dedup lookup failed (proceeding without): %s", e)
+        return set()
+
+
+async def _record_processed_emails(emails: list[dict[str, Any]]) -> None:
+    """Record processed message IDs for future dedup. ON CONFLICT DO NOTHING."""
+    pool = get_db_pool()
+    if not pool.is_initialized or not emails:
+        return
+
+    try:
+        async with pool.transaction() as conn:
+            await conn.executemany(
+                """
+                INSERT INTO processed_emails (gmail_message_id, sender, subject)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (gmail_message_id) DO NOTHING
+                """,
+                [
+                    (e["id"], e.get("from", ""), e.get("subject", ""))
+                    for e in emails
+                ],
+            )
+        logger.debug("Recorded %d processed email IDs", len(emails))
+    except Exception as e:
+        logger.warning("Failed to record processed emails: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Gmail API client
+# ---------------------------------------------------------------------------
 
 class GmailClient:
     """Lightweight Gmail API client with OAuth token refresh."""
@@ -142,6 +288,71 @@ class GmailClient:
             "snippet": data.get("snippet", ""),
         }
 
+    async def get_message_full(self, msg_id: str) -> dict[str, Any]:
+        """
+        Fetch a message with full body content.
+
+        Returns enriched dict with body_text, body_html, has_unsubscribe,
+        label_ids, and thread_id in addition to standard metadata fields.
+        """
+        client = await self._ensure_client()
+        headers = await self._get_headers()
+
+        response = await client.get(
+            f"{GMAIL_API_BASE}/users/me/messages/{msg_id}",
+            headers=headers,
+            params={"format": "full"},
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        payload = data.get("payload", {})
+
+        # Extract headers
+        header_map: dict[str, str] = {}
+        for h in payload.get("headers", []):
+            header_map[h["name"].lower()] = h["value"]
+
+        # Extract body
+        plain_text, html_text = _extract_body_parts(payload)
+
+        # Prefer plain text; fall back to HTML-to-text.
+        # Some mailers put HTML in the text/plain part — detect and reject.
+        def _looks_like_html(text: str) -> bool:
+            sample = text[:500]
+            return "<html" in sample.lower() or sample.count("<") > 5 or "@media" in sample
+
+        if plain_text.strip() and not _looks_like_html(plain_text):
+            body_text = plain_text.strip()
+        elif html_text.strip():
+            body_text = _html_to_text(html_text)
+        elif plain_text.strip():
+            # Plain text looked like HTML; try converting it
+            body_text = _html_to_text(plain_text)
+        else:
+            body_text = data.get("snippet", "")
+
+        # Truncate to configured limit
+        max_chars = settings.tools.gmail_body_max_chars
+        if len(body_text) > max_chars:
+            body_text = body_text[:max_chars] + "..."
+
+        # Check for List-Unsubscribe header (strong promo/newsletter signal)
+        has_unsubscribe = "list-unsubscribe" in header_map
+
+        return {
+            "id": data.get("id", msg_id),
+            "from": header_map.get("from", ""),
+            "subject": header_map.get("subject", "(no subject)"),
+            "date": header_map.get("date", ""),
+            "snippet": data.get("snippet", ""),
+            "body_text": body_text,
+            "body_html": html_text,
+            "has_unsubscribe": has_unsubscribe,
+            "label_ids": data.get("labelIds", []),
+            "thread_id": data.get("threadId", ""),
+        }
+
 
 # Module-level client (reused across invocations)
 _gmail_client: GmailClient | None = None
@@ -212,34 +423,65 @@ async def run(task: ScheduledTask) -> dict:
             "_skip_synthesis": "No unread emails.",
         }
 
-    # Fetch metadata for each message (concurrently, batched)
-    emails = []
+    # --- Dedup filter: skip already-processed messages ---
+    all_ids = [m["id"] for m in messages]
+    already_processed = await _get_processed_message_ids(all_ids)
+    new_messages = [m for m in messages if m["id"] not in already_processed]
+
+    if not new_messages:
+        return {
+            "query": query,
+            "total_unread": total,
+            "emails": [],
+            "summary": f"{total} unread emails, all already processed in a previous digest.",
+            "_skip_synthesis": "All emails already processed.",
+        }
+
+    logger.info(
+        "Gmail digest: %d unread, %d already processed, %d new",
+        total, len(already_processed), len(new_messages),
+    )
+
+    # --- Fetch full content for new messages (concurrently, batched) ---
+    emails: list[dict[str, Any]] = []
     batch_size = 10
-    for i in range(0, len(messages), batch_size):
-        batch = messages[i : i + batch_size]
-        tasks = [client.get_message_metadata(m["id"]) for m in batch]
+    for i in range(0, len(new_messages), batch_size):
+        batch = new_messages[i : i + batch_size]
+        tasks = [client.get_message_full(m["id"]) for m in batch]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for r in results:
             if isinstance(r, Exception):
-                logger.warning("Failed to fetch message metadata: %s", r)
+                logger.warning("Failed to fetch message: %s", r)
             else:
                 emails.append(r)
 
+    # --- Record processed IDs before synthesis (crash-safe) ---
+    await _record_processed_emails(emails)
+
+    # --- Build result for LLM synthesis ---
+    # Strip body_html from LLM payload (save tokens, not useful for synthesis)
+    emails_for_llm = []
+    for e in emails:
+        llm_email = {k: v for k, v in e.items() if k != "body_html"}
+        emails_for_llm.append(llm_email)
+
     # Build summary
-    summary_parts = [f"{total} unread emails."]
+    summary_parts = [f"{len(emails)} new emails (of {total} unread)."]
     if emails:
         previews = []
         for e in emails[:5]:
             sender = e["from"].split("<")[0].strip().strip('"') or e["from"]
             previews.append(f"{sender} ({e['subject']})")
         summary_parts.append("From: " + ", ".join(previews))
-        if total > 5:
-            summary_parts.append(f"...and {total - 5} more.")
+        if len(emails) > 5:
+            summary_parts.append(f"...and {len(emails) - 5} more.")
 
     result = {
         "query": query,
         "total_unread": total,
-        "emails": emails,
+        "new_emails": len(emails),
+        "already_processed": len(already_processed),
+        "emails": emails_for_llm,
         "summary": " ".join(summary_parts),
     }
 

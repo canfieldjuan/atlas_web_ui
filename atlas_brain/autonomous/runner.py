@@ -330,6 +330,20 @@ class HeadlessRunner:
             except Exception as e:
                 logger.warning("Proactive actions cleanup failed: %s", e)
 
+            try:
+                from ..config import settings
+                email_retention = settings.tools.gmail_dedup_retention_days
+                emails_result = await pool.execute(
+                    """
+                    DELETE FROM processed_emails
+                    WHERE processed_at < CURRENT_TIMESTAMP - make_interval(days => $1)
+                    """,
+                    email_retention,
+                )
+                result["processed_emails_cleaned"] = emails_result
+            except Exception as e:
+                logger.warning("Processed emails cleanup failed: %s", e)
+
         return result
 
 
