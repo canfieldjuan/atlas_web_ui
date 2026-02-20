@@ -236,6 +236,15 @@ class HeadlessRunner:
 
         llm = llm_registry.get_active()
         if llm is None:
+            # Auto-activate Ollama backend for headless synthesis
+            try:
+                from ..config import settings as _settings
+                llm_registry.activate("ollama", model=_settings.llm.ollama_model, base_url=_settings.llm.ollama_url)
+                llm = llm_registry.get_active()
+                logger.info("Auto-activated Ollama LLM for synthesis")
+            except Exception as e:
+                logger.warning("Could not auto-activate LLM for synthesis of task '%s': %s", task_name, e)
+        if llm is None:
             logger.warning("No active LLM for synthesis of task '%s'", task_name)
             return None
 

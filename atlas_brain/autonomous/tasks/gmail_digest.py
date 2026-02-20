@@ -459,11 +459,23 @@ async def run(task: ScheduledTask) -> dict:
     await _record_processed_emails(emails)
 
     # --- Build result for LLM synthesis ---
-    # Strip body_html from LLM payload (save tokens, not useful for synthesis)
+    # Slim down each email to only what the LLM needs for classification.
+    # Full body_text is stored in the email dict; we truncate for synthesis
+    # to keep the total payload under ~8K chars (avoids LLM hallucination).
+    SYNTHESIS_BODY_LIMIT = 500
     emails_for_llm = []
     for e in emails:
-        llm_email = {k: v for k, v in e.items() if k != "body_html"}
-        emails_for_llm.append(llm_email)
+        body = e.get("body_text", "")
+        if len(body) > SYNTHESIS_BODY_LIMIT:
+            body = body[:SYNTHESIS_BODY_LIMIT] + "..."
+        emails_for_llm.append({
+            "from": e.get("from", ""),
+            "subject": e.get("subject", ""),
+            "date": e.get("date", ""),
+            "body_text": body,
+            "has_unsubscribe": e.get("has_unsubscribe", False),
+            "label_ids": e.get("label_ids", []),
+        })
 
     # Build summary
     summary_parts = [f"{len(emails)} new emails (of {total} unread)."]
