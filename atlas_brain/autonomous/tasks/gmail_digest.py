@@ -357,6 +357,7 @@ class GmailClient:
             "has_unsubscribe": has_unsubscribe,
             "label_ids": data.get("labelIds", []),
             "thread_id": data.get("threadId", ""),
+            "message_id": header_map.get("message-id", ""),
         }
 
 

@@ -22,8 +22,14 @@ logger = logging.getLogger("atlas.services.llm_router")
 # Cloud LLM singleton -- initialized at startup
 _cloud_llm: Optional[LLMService] = None
 
+# Draft LLM singleton -- Anthropic for email draft generation
+_draft_llm: Optional[LLMService] = None
+
 # Workflows that require cloud reasoning
 CLOUD_WORKFLOWS = frozenset({"booking", "email"})
+
+# Workflows that use the draft LLM (Anthropic)
+DRAFT_WORKFLOWS = frozenset({"email_draft"})
 
 
 def init_cloud_llm(
@@ -59,6 +65,38 @@ def get_cloud_llm() -> Optional[LLMService]:
     return _cloud_llm
 
 
+def init_draft_llm(
+    model: str = "claude-sonnet-4-5-20250929",
+    api_key: str | None = None,
+) -> Optional[LLMService]:
+    """Initialize the draft LLM singleton (Anthropic). Called from main.py lifespan."""
+    global _draft_llm
+    from .llm.anthropic import AnthropicLLM
+
+    try:
+        _draft_llm = AnthropicLLM(model=model, api_key=api_key)
+        _draft_llm.load()
+        logger.info("Draft LLM initialized: %s (Anthropic)", model)
+        return _draft_llm
+    except Exception as e:
+        logger.error("Failed to initialize draft LLM: %s", e)
+        return None
+
+
+def shutdown_draft_llm() -> None:
+    """Unload the draft LLM. Called from main.py shutdown."""
+    global _draft_llm
+    if _draft_llm:
+        _draft_llm.unload()
+        _draft_llm = None
+        logger.info("Draft LLM shut down")
+
+
+def get_draft_llm() -> Optional[LLMService]:
+    """Get the draft LLM instance (or None if not loaded)."""
+    return _draft_llm
+
+
 def get_llm(workflow_type: Optional[str] = None) -> Optional[LLMService]:
     """Get the right LLM for a workflow type.
 
@@ -66,6 +104,9 @@ def get_llm(workflow_type: Optional[str] = None) -> Optional[LLMService]:
     Falls back to local if cloud is unavailable.
     """
     from . import llm_registry
+
+    if workflow_type and workflow_type in DRAFT_WORKFLOWS and _draft_llm:
+        return _draft_llm
 
     if workflow_type and workflow_type in CLOUD_WORKFLOWS and _cloud_llm:
         return _cloud_llm

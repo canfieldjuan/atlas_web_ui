@@ -93,6 +93,9 @@ class GmailTransport:
         reply_to: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
         html: str | None = None,
+        thread_id: str | None = None,
+        in_reply_to: str | None = None,
+        references: str | None = None,
     ) -> dict[str, Any]:
         """
         Send an email via Gmail API.
@@ -107,6 +110,9 @@ class GmailTransport:
             reply_to: Reply-to address.
             attachments: List of {"filename": str, "content": str (base64)}.
             html: Optional HTML body (used instead of plain text if provided).
+            thread_id: Gmail thread ID for threading replies.
+            in_reply_to: Message-ID of the email being replied to.
+            references: Message-ID references for threading.
 
         Returns:
             Dict with "id" (Gmail message ID) and "threadId".
@@ -134,6 +140,10 @@ class GmailTransport:
             msg["Bcc"] = ", ".join(bcc)
         if reply_to:
             msg["Reply-To"] = reply_to
+        if in_reply_to:
+            msg["In-Reply-To"] = in_reply_to
+        if references:
+            msg["References"] = references
 
         # Add attachments
         if attachments:
@@ -159,9 +169,13 @@ class GmailTransport:
         token = await self._get_access_token()
         client = await self._ensure_client()
 
+        payload = {"raw": raw_b64}
+        if thread_id:
+            payload["threadId"] = thread_id
+
         response = await client.post(
             f"{GMAIL_API_BASE}/users/me/messages/send",
-            json={"raw": raw_b64},
+            json=payload,
             headers={"Authorization": f"Bearer {token}"},
         )
 

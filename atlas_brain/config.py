@@ -123,6 +123,16 @@ class LLMConfig(BaseSettings):
         description="Groq API key (or set GROQ_API_KEY env var)"
     )
 
+    # Anthropic settings (email draft generation)
+    anthropic_model: str = Field(
+        default="claude-sonnet-4-5-20250929",
+        description="Anthropic model name for email drafting",
+    )
+    anthropic_api_key: Optional[str] = Field(
+        default=None,
+        description="Anthropic API key (or set ANTHROPIC_API_KEY env var)",
+    )
+
     # Cloud LLM (Ollama cloud model, runs alongside local for business workflows)
     cloud_enabled: bool = Field(
         default=False,
@@ -500,6 +510,30 @@ class EmailConfig(BaseSettings):
     max_attachment_size_mb: int = Field(
         default=10,
         description="Maximum attachment size in MB"
+    )
+
+
+class EmailDraftConfig(BaseSettings):
+    """Email draft generation configuration (Anthropic LLM for reply drafting)."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ATLAS_EMAIL_DRAFT_", env_file=".env", extra="ignore",
+    )
+
+    enabled: bool = Field(default=False, description="Enable email draft generation")
+    model_provider: str = Field(default="anthropic", description="LLM provider for drafting")
+    model_name: str = Field(default="claude-sonnet-4-5-20250929", description="Model name for drafting")
+    max_tokens: int = Field(default=1024, description="Max tokens for draft generation")
+    temperature: float = Field(default=0.4, description="Sampling temperature for drafts")
+    auto_draft_priorities: list[str] = Field(
+        default=["action_required"],
+        description="Email priorities that trigger auto-drafting",
+    )
+    draft_expiry_hours: int = Field(default=24, ge=1, le=168, description="Hours before pending drafts expire")
+    notify_drafts: bool = Field(default=True, description="Send ntfy notification for new drafts")
+    atlas_api_url: str = Field(
+        default="http://localhost:8001",
+        description="Atlas API URL for ntfy action buttons",
     )
 
 
@@ -1258,6 +1292,7 @@ class PersonaConfig(BaseSettings):
     )
 
     name: str = Field(default="Atlas", description="Assistant name")
+    owner_name: str = Field(default="Juan", description="Owner/user name for email sign-offs and personalization")
 
 
 class AgentConfig(BaseSettings):
@@ -1509,6 +1544,7 @@ class Settings(BaseSettings):
     edge: EdgeConfig = Field(default_factory=EdgeConfig)
     autonomous: AutonomousConfig = Field(default_factory=AutonomousConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
+    email_draft: EmailDraftConfig = Field(default_factory=EmailDraftConfig)
     temporal: TemporalPatternConfig = Field(default_factory=TemporalPatternConfig)
     openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
     ftl_tracing: FTLTracingConfig = Field(default_factory=FTLTracingConfig)

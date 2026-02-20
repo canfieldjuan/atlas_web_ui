@@ -353,6 +353,17 @@ class HeadlessRunner:
             except Exception as e:
                 logger.warning("Processed emails cleanup failed: %s", e)
 
+            try:
+                expired_result = await pool.execute(
+                    """
+                    UPDATE email_drafts SET status = 'expired'
+                    WHERE status = 'pending' AND expires_at < CURRENT_TIMESTAMP
+                    """,
+                )
+                result["email_drafts_expired"] = expired_result
+            except Exception as e:
+                logger.warning("Email drafts expiration failed: %s", e)
+
         return result
 
 

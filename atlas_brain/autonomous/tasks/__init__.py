@@ -15,6 +15,7 @@ def register_builtin_tasks(runner) -> None:
     from .preference_learning import run as preference_learning_run
     from .pattern_learning import run as pattern_learning_run
     from .anomaly_detection import run as anomaly_detection_run
+    from .email_draft import run as email_draft_run
 
     runner.register_builtin("security_summary", security_summary_run)
     runner.register_builtin("device_health_check", device_health_run)
@@ -28,3 +29,4 @@ def register_builtin_tasks(runner) -> None:
     runner.register_builtin("preference_learning", preference_learning_run)
     runner.register_builtin("pattern_learning", pattern_learning_run)
     runner.register_builtin("anomaly_detection", anomaly_detection_run)
+    runner.register_builtin("email_draft", email_draft_run)

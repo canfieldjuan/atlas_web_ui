@@ -53,3 +53,6 @@ langchain-core>=0.3.0
 
 # Autonomous task scheduling
 apscheduler>=3.10,<4.0
+
+# Email draft generation (Anthropic Claude)
+anthropic>=0.39.0

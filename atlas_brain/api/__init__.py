@@ -22,6 +22,7 @@ from .orchestrated import router as orchestrated_router
 from .autonomous import router as autonomous_router
 from .presence import router as presence_router
 from .proactive_actions import router as proactive_actions_router
+from .email_drafts import router as email_drafts_router
 from .security import router as security_router
 
 # Main router that aggregates all sub-routers
@@ -45,4 +46,5 @@ router.include_router(orchestrated_router)
 router.include_router(autonomous_router)
 router.include_router(presence_router)
 router.include_router(proactive_actions_router)
+router.include_router(email_drafts_router)
 router.include_router(security_router)

@@ -7,15 +7,25 @@ from .groq import GroqLLM
 from .cloud import CloudLLM
 from .hybrid import HybridLLM
 
+# Import Anthropic backend (optional - requires anthropic SDK)
+try:
+    from .anthropic import AnthropicLLM
+    _has_anthropic = True
+except ImportError:
+    _has_anthropic = False
+
 # Import transformers flash backend (optional - requires transformers)
 try:
     from .transformers_flash import TransformersFlashLLM
-    __all__ = [
-        "LlamaCppLLM", "OllamaLLM", "TogetherLLM",
-        "GroqLLM", "CloudLLM", "HybridLLM", "TransformersFlashLLM",
-    ]
+    _has_transformers = True
 except ImportError:
-    __all__ = [
-        "LlamaCppLLM", "OllamaLLM", "TogetherLLM",
-        "GroqLLM", "CloudLLM", "HybridLLM",
-    ]
+    _has_transformers = False
+
+__all__ = [
+    "LlamaCppLLM", "OllamaLLM", "TogetherLLM",
+    "GroqLLM", "CloudLLM", "HybridLLM",
+]
+if _has_anthropic:
+    __all__.append("AnthropicLLM")
+if _has_transformers:
+    __all__.append("TransformersFlashLLM")

@@ -210,6 +210,15 @@ class TaskScheduler:
             },
         },
         {
+            "name": "email_draft",
+            "description": "Generate reply drafts for action-required emails",
+            "task_type": "builtin",
+            "schedule_type": "interval",
+            "interval_seconds": 1800,
+            "timeout_seconds": 120,
+            "metadata": {"builtin_handler": "email_draft"},
+        },
+        {
             "name": "security_summary",
             "description": "Periodic security event and alert aggregation",
             "task_type": "builtin",
