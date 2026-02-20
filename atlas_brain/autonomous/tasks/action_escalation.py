@@ -21,7 +21,7 @@ STALE_DAYS = 7
 OVERDUE_DAYS = 3
 
 
-async def run(task: ScheduledTask) -> dict[str, Any] | str:
+async def run(task: ScheduledTask) -> dict[str, Any]:
     """
     Check pending action items and escalate aging ones via notification.
 
@@ -29,12 +29,17 @@ async def run(task: ScheduledTask) -> dict[str, Any] | str:
         stale_days (int): Days before an item is considered stale (default: 7)
         overdue_days (int): Days before an item is considered overdue (default: 3)
     """
-    # 1. Presence gate -- return str (not dict) to skip LLM synthesis
+    # 1. Presence gate
     from ...autonomous.presence import get_presence_tracker, OccupancyState
 
     presence = get_presence_tracker()
     if presence.state.state == OccupancyState.EMPTY:
-        return "Skipped: house empty"
+        return {
+            "pending_count": 0,
+            "escalations": {},
+            "notified": False,
+            "_skip_synthesis": "Action escalation skipped -- house empty.",
+        }
 
     metadata = task.metadata or {}
     stale_threshold = metadata.get("stale_days", STALE_DAYS)
@@ -45,7 +50,12 @@ async def run(task: ScheduledTask) -> dict[str, Any] | str:
 
     pool = get_db_pool()
     if not pool.is_initialized:
-        return "Skipped: database not ready"
+        return {
+            "pending_count": 0,
+            "escalations": {},
+            "notified": False,
+            "_skip_synthesis": "Action escalation skipped -- database not ready.",
+        }
 
     try:
         rows = await pool.fetch(

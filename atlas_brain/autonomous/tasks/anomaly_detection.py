@@ -47,7 +47,7 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
 
     metadata = task.metadata or {}
     deviation_threshold = metadata.get("deviation_threshold", 2.0)
-    min_samples = metadata.get("min_samples", 5)
+    min_samples = metadata.get("min_samples", 3)
 
     pool = get_db_pool()
     if not pool.is_initialized:

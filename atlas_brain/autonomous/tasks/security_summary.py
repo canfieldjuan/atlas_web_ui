@@ -14,7 +14,7 @@ from ...storage.models import ScheduledTask
 logger = logging.getLogger("atlas.autonomous.tasks.security_summary")
 
 
-async def run(task) -> dict:
+async def run(task: ScheduledTask) -> dict:
     """
     Aggregate vision events and alerts for the last N hours.
 
