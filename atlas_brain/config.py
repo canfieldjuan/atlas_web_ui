@@ -368,6 +368,10 @@ class MemoryConfig(BaseSettings):
         default=3.0,
         description="Timeout in seconds for in-graph memory context retrieval",
     )
+    max_entity_edges: int = Field(
+        default=20,
+        description="Maximum entity edges to return from graph traversal",
+    )
 
     # Nightly sync settings - batch processing for long-term memory
     nightly_sync_enabled: bool = Field(

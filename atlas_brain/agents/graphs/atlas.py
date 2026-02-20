@@ -238,6 +238,7 @@ async def classify_and_route(
                 "workflow_to_start": workflow_type,
                 "confidence": confidence,
                 "classify_ms": classify_ms,
+                "entity_name": entity_name,
             },
             goto="start_workflow",
         )

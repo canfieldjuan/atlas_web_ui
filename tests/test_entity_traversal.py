@@ -69,6 +69,7 @@ class TestGetEntityEdges:
             mock.memory.base_url = "http://localhost:8003"
             mock.memory.timeout = 10.0
             mock.memory.group_id = "test-group"
+            mock.memory.max_entity_edges = 20
             yield mock
 
     @pytest.mark.asyncio

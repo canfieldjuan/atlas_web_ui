@@ -162,7 +162,7 @@ class RAGClient:
         self,
         entity_name: str,
         group_id: Optional[str] = None,
-        max_edges: int = 20,
+        max_edges: Optional[int] = None,
     ) -> SearchResult:
         """
         Retrieve all edges (relationships) for a named entity via graph traversal.
@@ -173,7 +173,7 @@ class RAGClient:
         Args:
             entity_name: Entity name to look up (e.g. "Juan")
             group_id: Group ID to search within
-            max_edges: Maximum edges to return
+            max_edges: Maximum edges to return (defaults to config)
 
         Returns:
             SearchResult with facts from entity edges
@@ -182,6 +182,7 @@ class RAGClient:
             return SearchResult()
 
         try:
+            limit = max_edges if max_edges is not None else settings.memory.max_entity_edges
             gid = group_id or settings.memory.group_id
             client = await self._get_client()
             resp = await client.get(
@@ -194,7 +195,7 @@ class RAGClient:
             facts = []
             all_edges = data.get("edges", [])
             active_edges = [e for e in all_edges if not e.get("expired_at")]
-            for edge in active_edges[:max_edges]:
+            for edge in active_edges[:limit]:
                 facts.append(SearchSource(
                     uuid=edge.get("uuid", ""),
                     name=edge.get("name", ""),
