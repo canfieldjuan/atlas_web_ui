@@ -8,6 +8,7 @@ Supports both SWML (new) and LaML (legacy) formats.
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Optional
 
@@ -500,19 +501,61 @@ async def handle_voicemail(
     CallSid: str = Form(...),
     RecordingUrl: str = Form(...),
     RecordingDuration: str = Form(...),
+    From: str = Form(""),
+    To: str = Form(""),
     context: str = "",
 ):
     """
     Handle voicemail recording completion.
+
+    Saves voicemail to the appointment_messages table and sends
+    a push notification to the business owner.
     """
     logger.info(
-        "Voicemail received: %s (%ss) for context %s",
+        "Voicemail received: %s (%ss) from %s for context %s",
         RecordingUrl,
         RecordingDuration,
+        From,
         context,
     )
 
-    # TODO: Save voicemail to database, send notification
+    # Resolve business context for this number
+    context_router = get_context_router()
+    biz_context = context_router.get_context_for_number(To)
+    context_id = biz_context.id if biz_context else (context or "unknown")
+
+    # Persist voicemail as an appointment message
+    try:
+        from ...storage.repositories.appointment import get_appointment_repo
+        repo = get_appointment_repo()
+        await repo.create_message(
+            caller_phone=From,
+            message_text=f"Voicemail ({RecordingDuration}s)",
+            business_context_id=context_id,
+            metadata={
+                "type": "voicemail",
+                "recording_url": RecordingUrl,
+                "recording_duration": int(RecordingDuration or 0),
+                "call_sid": CallSid,
+            },
+        )
+        logger.info("Voicemail saved for call %s", CallSid)
+    except Exception as e:
+        logger.error("Failed to save voicemail: %s", e)
+
+    # Send push notification to business owner
+    try:
+        from ...tools.notify import get_notify_tool
+        notify = get_notify_tool()
+        duration = int(RecordingDuration or 0)
+        biz_name = biz_context.name if biz_context else "Atlas"
+        await notify._send_notification(
+            title=f"{biz_name}: New Voicemail",
+            message=f"Voicemail from {From} ({duration}s)",
+            priority="high",
+        )
+    except Exception as e:
+        logger.warning("Failed to send voicemail notification: %s", e)
 
     return laml_response("""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -528,16 +571,44 @@ async def handle_recording_status(
     RecordingSid: str = Form(...),
     RecordingStatus: str = Form(...),
     RecordingUrl: Optional[str] = Form(None),
+    RecordingDuration: Optional[str] = Form(None),
 ):
-    """Handle recording status updates."""
+    """
+    Handle recording status updates.
+
+    Updates the voicemail message metadata with recording status
+    (completed, failed, etc.) and final recording URL.
+    """
     logger.info(
-        "Recording %s for call %s: %s",
+        "Recording %s for call %s: %s (url=%s)",
         RecordingSid,
         CallSid,
         RecordingStatus,
+        RecordingUrl,
     )
 
-    # TODO: Update recording status in database
+    if RecordingStatus == "completed" and RecordingUrl:
+        try:
+            from ...storage.database import get_db_pool
+            pool = get_db_pool()
+            if pool.is_initialized:
+                await pool.execute(
+                    """
+                    UPDATE appointment_messages
+                    SET metadata = metadata || $1::jsonb
+                    WHERE metadata->>'call_sid' = $2
+                    """,
+                    json.dumps({
+                        "recording_status": RecordingStatus,
+                        "recording_sid": RecordingSid,
+                        "final_recording_url": RecordingUrl,
+                        "final_duration": int(RecordingDuration or 0),
+                    }),
+                    CallSid,
+                )
+                logger.info("Recording status updated for call %s", CallSid)
+        except Exception as e:
+            logger.warning("Failed to update recording status: %s", e)
 
     return Response(status_code=204)
 
@@ -548,33 +619,17 @@ async def handle_audio_stream(websocket: WebSocket, call_sid: str):
     Handle bidirectional audio streaming for a call.
 
     This WebSocket receives audio from the caller and sends AI responses back.
-    Audio format: 8kHz mulaw (base64 encoded in JSON messages)
-
-    Supports two modes:
-    - Legacy: STT -> LLM -> TTS (PhoneCallProcessor)
-    - PersonaPlex: Direct speech-to-speech (PersonaPlexProcessor)
+    Audio format: 8kHz mulaw (base64 encoded in JSON messages).
+    Uses PersonaPlex for direct speech-to-speech processing.
     """
-    use_personaplex = comms_settings.personaplex_enabled
-
-    if use_personaplex:
-        from ...comms.personaplex_processor import (
-            get_personaplex_processor,
-            create_personaplex_processor,
-            remove_personaplex_processor,
-        )
-    else:
-        from ...comms.phone_processor import (
-            get_call_processor,
-            create_call_processor,
-            remove_call_processor,
-        )
+    from ...comms.personaplex_processor import (
+        get_personaplex_processor,
+        create_personaplex_processor,
+        remove_personaplex_processor,
+    )
 
     await websocket.accept()
-    logger.info(
-        "Audio stream connected for call %s (mode=%s)",
-        call_sid,
-        "personaplex" if use_personaplex else "legacy"
-    )
+    logger.info("Audio stream connected for call %s", call_sid)
 
     stream_sid = None
     processor = None
@@ -602,97 +657,83 @@ async def handle_audio_stream(websocket: WebSocket, call_sid: str):
             await websocket.close()
             return
 
-        # Get or create call processor based on mode
         from_number = call.from_number if call else ""
         to_number = call.to_number if call else ""
 
         # Track if we need to set callback after stream starts (pre-warm case)
         needs_callback_setup = False
 
-        if use_personaplex:
-            processor = get_personaplex_processor(call_sid)
+        processor = get_personaplex_processor(call_sid)
 
-            async def send_audio(audio_b64: str):
-                """Callback to send audio back to caller."""
-                logger.info(
-                    "send_audio callback: stream_sid=%s, audio_len=%d",
-                    stream_sid,
-                    len(audio_b64),
-                )
-                if stream_sid:
-                    await websocket.send_json({
-                        "event": "media",
-                        "streamSid": stream_sid,
-                        "media": {"payload": audio_b64},
-                    })
-                    logger.info("Audio sent to SignalWire")
-                else:
-                    logger.warning("No stream_sid, cannot send audio")
-
-            if processor is not None and processor.state.is_connected:
-                # Pre-warmed and connected - wait for stream_sid before setting callback
-                logger.info("Using pre-warmed PersonaPlex for %s", call_sid)
-                needs_callback_setup = True
-            elif processor is not None and processor.state.is_connecting:
-                # Processor is connecting - wait for it
-                logger.info("Waiting for PersonaPlex connection for %s", call_sid)
-                for _ in range(300):  # Wait up to 30 seconds (handshake can take ~21s)
-                    await asyncio.sleep(0.1)
-                    if processor.state.is_connected:
-                        logger.info("PersonaPlex connection completed for %s", call_sid)
-                        needs_callback_setup = True
-                        break
-                    if not processor.state.is_connecting:
-                        # Connection failed
-                        logger.error("PersonaPlex connection failed for %s", call_sid)
-                        break
-                else:
-                    logger.error("PersonaPlex connection timeout for %s", call_sid)
-
-                if not processor.state.is_connected:
-                    await remove_personaplex_processor(call_sid)
-                    await websocket.close()
-                    return
+        async def send_audio(audio_b64: str):
+            """Callback to send audio back to caller."""
+            logger.info(
+                "send_audio callback: stream_sid=%s, audio_len=%d",
+                stream_sid,
+                len(audio_b64),
+            )
+            if stream_sid:
+                await websocket.send_json({
+                    "event": "media",
+                    "streamSid": stream_sid,
+                    "media": {"payload": audio_b64},
+                })
+                logger.info("Audio sent to SignalWire")
             else:
-                # No pre-warmed processor - create new one
-                if processor is not None:
-                    logger.info("Pre-warm failed for %s, recreating", call_sid)
-                    await remove_personaplex_processor(call_sid)
+                logger.warning("No stream_sid, cannot send audio")
 
-                t0 = time.time()
-                logger.info("Starting PersonaPlex connection for %s", call_sid)
-                processor = create_personaplex_processor(
-                    call_sid=call_sid,
-                    from_number=from_number,
-                    to_number=to_number,
-                    context_id=context.id,
-                    business_context=context,
-                    on_audio_ready=lambda b64: asyncio.create_task(send_audio(b64)),
-                )
-                connected = await processor.connect()
-                t1 = time.time()
-                logger.info(
-                    "PersonaPlex connect took %.2fs for %s",
-                    t1 - t0,
-                    call_sid,
-                )
-                if not connected:
-                    logger.error("Failed to connect PersonaPlex for %s", call_sid)
-                    await remove_personaplex_processor(call_sid)
-                    await websocket.close()
-                    return
-                logger.info("Created PersonaPlex processor for call %s", call_sid)
+        if processor is not None and processor.state.is_connected:
+            # Pre-warmed and connected - wait for stream_sid before setting callback
+            logger.info("Using pre-warmed PersonaPlex for %s", call_sid)
+            needs_callback_setup = True
+        elif processor is not None and processor.state.is_connecting:
+            # Processor is connecting - wait for it
+            logger.info("Waiting for PersonaPlex connection for %s", call_sid)
+            for _ in range(300):  # Wait up to 30 seconds (handshake can take ~21s)
+                await asyncio.sleep(0.1)
+                if processor.state.is_connected:
+                    logger.info("PersonaPlex connection completed for %s", call_sid)
+                    needs_callback_setup = True
+                    break
+                if not processor.state.is_connecting:
+                    logger.error("PersonaPlex connection failed for %s", call_sid)
+                    break
+            else:
+                logger.error("PersonaPlex connection timeout for %s", call_sid)
+
+            if not processor.state.is_connected:
+                await remove_personaplex_processor(call_sid)
+                await websocket.close()
+                return
         else:
-            processor = get_call_processor(call_sid)
-            if processor is None:
-                processor = create_call_processor(
-                    call_sid=call_sid,
-                    from_number=from_number,
-                    to_number=to_number,
-                    context_id=context.id,
-                    business_context=context,
-                )
-                logger.info("Created legacy processor for call %s", call_sid)
+            # No pre-warmed processor - create new one
+            if processor is not None:
+                logger.info("Pre-warm failed for %s, recreating", call_sid)
+                await remove_personaplex_processor(call_sid)
+
+            t0 = time.time()
+            logger.info("Starting PersonaPlex connection for %s", call_sid)
+            processor = create_personaplex_processor(
+                call_sid=call_sid,
+                from_number=from_number,
+                to_number=to_number,
+                context_id=context.id,
+                business_context=context,
+                on_audio_ready=lambda b64: asyncio.create_task(send_audio(b64)),
+            )
+            connected = await processor.connect()
+            t1 = time.time()
+            logger.info(
+                "PersonaPlex connect took %.2fs for %s",
+                t1 - t0,
+                call_sid,
+            )
+            if not connected:
+                logger.error("Failed to connect PersonaPlex for %s", call_sid)
+                await remove_personaplex_processor(call_sid)
+                await websocket.close()
+                return
+            logger.info("Created PersonaPlex processor for call %s", call_sid)
 
         while True:
             data = await websocket.receive_json()
@@ -711,7 +752,7 @@ async def handle_audio_stream(websocket: WebSocket, call_sid: str):
                     processor._state.stream_sid = stream_sid
 
                 # For pre-warmed PersonaPlex, now set callback and drain buffer
-                if use_personaplex and needs_callback_setup and processor:
+                if needs_callback_setup and processor:
                     logger.info(
                         "Setting PersonaPlex callback and draining buffer for %s",
                         call_sid,
@@ -736,63 +777,14 @@ async def handle_audio_stream(websocket: WebSocket, call_sid: str):
                         logger.info("Buffered audio sent to SignalWire")
                     needs_callback_setup = False
 
-                # Play greeting - PersonaPlex generates its own, legacy uses TTS
-                if processor and context and stream_sid and not use_personaplex:
-                    try:
-                        # Try cached greeting first for instant playback
-                        from ...comms.phone_processor import get_cached_greeting
-                        greeting_audio = get_cached_greeting(context.id)
-
-                        if greeting_audio:
-                            logger.info("Using cached greeting for %s", context.id)
-                        else:
-                            # Fall back to synthesis
-                            logger.info("Synthesizing greeting for call %s", call_sid)
-                            greeting_audio = await processor.synthesize_greeting(
-                                context.greeting
-                            )
-
-                        if greeting_audio:
-                            await websocket.send_json({
-                                "event": "media",
-                                "streamSid": stream_sid,
-                                "media": {
-                                    "payload": greeting_audio,
-                                },
-                            })
-                            logger.info("Greeting sent (%d bytes)", len(greeting_audio))
-                        else:
-                            logger.warning("No greeting audio generated")
-                    except Exception as e:
-                        logger.error("Failed to send greeting: %s", e, exc_info=True)
-                elif use_personaplex and not needs_callback_setup:
+                if not needs_callback_setup:
                     logger.info("PersonaPlex greeting sent from buffer")
 
             elif event == "media":
-                # Audio data from caller
+                # Audio data from caller -- PersonaPlex sends responses via callback
                 payload = data.get("media", {}).get("payload")
                 if payload and processor:
-                    # Process audio - PersonaPlex sends responses via callback
-                    response_audio = await processor.process_audio_chunk(payload)
-
-                    # Only legacy mode returns audio here
-                    if not use_personaplex and response_audio and stream_sid:
-                        logger.info(
-                            "Sending response audio to caller (%d bytes)",
-                            len(response_audio)
-                        )
-                        await websocket.send_json({
-                            "event": "media",
-                            "streamSid": stream_sid,
-                            "media": {
-                                "payload": response_audio,
-                            },
-                        })
-                        logger.info("Response audio sent successfully")
-                    elif not use_personaplex and response_audio:
-                        logger.warning(
-                            "Response audio generated but no stream_sid"
-                        )
+                    await processor.process_audio_chunk(payload)
 
             elif event == "stop":
                 logger.info("Stream stopped for call %s", call_sid)
@@ -804,11 +796,55 @@ async def handle_audio_stream(websocket: WebSocket, call_sid: str):
         logger.error("Audio stream error for call %s: %s", call_sid, e)
     finally:
         if processor:
-            if use_personaplex:
-                await remove_personaplex_processor(call_sid)
-            else:
-                remove_call_processor(call_sid)
+            await remove_personaplex_processor(call_sid)
         logger.info("Audio stream ended for call %s", call_sid)
+
+
+async def _generate_sms_reply(body: str, context) -> Optional[str]:
+    """Generate an SMS reply using the LLM with business context persona."""
+    from ...services import llm_registry
+    from ...services.protocols import Message
+
+    llm = llm_registry.get_active()
+    if not llm:
+        logger.warning("No active LLM for SMS auto-reply")
+        return None
+
+    system_prompt = (
+        f"You are {context.voice_name}, responding to an SMS for {context.name}."
+    )
+    if context.persona:
+        system_prompt += f" {context.persona}"
+    if context.business_type:
+        system_prompt += f" Business type: {context.business_type}."
+    if context.services:
+        system_prompt += f" Services: {', '.join(context.services)}."
+    system_prompt += (
+        " Keep replies concise (under 160 characters if possible)."
+        " Be helpful and professional."
+    )
+
+    messages = [
+        Message(role="system", content=system_prompt),
+        Message(role="user", content=body),
+    ]
+
+    loop = asyncio.get_event_loop()
+    result = await asyncio.wait_for(
+        loop.run_in_executor(
+            None,
+            lambda: llm.chat(messages=messages, max_tokens=200, temperature=0.7),
+        ),
+        timeout=15.0,
+    )
+
+    text = result.get("response", "").strip()
+    if not text:
+        return None
+
+    # Strip <think> tags (Qwen3 models)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    return text if text else None
 
 
 # SMS webhooks
@@ -853,11 +889,20 @@ async def handle_inbound_sms(
         )
         message.context_id = context.id
 
-        # TODO: Process with LLM and send auto-reply if enabled
-        if context.sms_auto_reply and context.sms_enabled:
-            # Generate response using LLM
-            # await send_sms_response(message, context)
-            pass
+        # Auto-reply via LLM if enabled for this business context
+        if context.sms_auto_reply and context.sms_enabled and Body.strip():
+            try:
+                reply = await _generate_sms_reply(Body, context)
+                if reply:
+                    await provider.send_sms(
+                        to_number=From,
+                        from_number=To,
+                        body=reply,
+                        context_id=context.id,
+                    )
+                    logger.info("SMS auto-reply sent to %s", From)
+            except Exception as e:
+                logger.warning("SMS auto-reply failed: %s", e)
 
     except Exception as e:
         logger.error("Error handling inbound SMS: %s", e)
