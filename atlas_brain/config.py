@@ -1463,6 +1463,21 @@ class EscalationConfig(BaseSettings):
     broadcast_occupancy: bool = Field(default=True, description="Broadcast occupancy state changes to edge nodes")
 
 
+class CallIntelligenceConfig(BaseSettings):
+    """Post-call transcription and data extraction."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ATLAS_CALL_INTELLIGENCE_", env_file=".env", extra="ignore"
+    )
+    enabled: bool = Field(default=False, description="Enable call recording and processing")
+    min_duration_seconds: int = Field(default=10, ge=0, description="Skip calls shorter than this")
+    asr_url: str = Field(default="http://localhost:8081/v1/asr", description="ASR batch endpoint")
+    asr_timeout: int = Field(default=60, ge=10, le=300, description="ASR request timeout")
+    llm_max_tokens: int = Field(default=1024, ge=128, le=4096)
+    llm_temperature: float = Field(default=0.3, ge=0.0, le=1.0)
+    notify_enabled: bool = Field(default=True, description="Push ntfy after processing")
+
+
 class TemporalPatternConfig(BaseSettings):
     """Temporal pattern context configuration."""
 
@@ -1546,6 +1561,7 @@ class Settings(BaseSettings):
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     email_draft: EmailDraftConfig = Field(default_factory=EmailDraftConfig)
     temporal: TemporalPatternConfig = Field(default_factory=TemporalPatternConfig)
+    call_intelligence: CallIntelligenceConfig = Field(default_factory=CallIntelligenceConfig)
     openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
     ftl_tracing: FTLTracingConfig = Field(default_factory=FTLTracingConfig)
 

@@ -6,6 +6,7 @@ Supports both SWML (new) and LaML (legacy) formats.
 """
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -633,6 +634,7 @@ async def handle_audio_stream(websocket: WebSocket, call_sid: str):
 
     stream_sid = None
     processor = None
+    audio_chunks: list[bytes] = []
 
     try:
         provider = get_provider()
@@ -783,8 +785,10 @@ async def handle_audio_stream(websocket: WebSocket, call_sid: str):
             elif event == "media":
                 # Audio data from caller -- PersonaPlex sends responses via callback
                 payload = data.get("media", {}).get("payload")
-                if payload and processor:
-                    await processor.process_audio_chunk(payload)
+                if payload:
+                    audio_chunks.append(base64.b64decode(payload))
+                    if processor:
+                        await processor.process_audio_chunk(payload)
 
             elif event == "stop":
                 logger.info("Stream stopped for call %s", call_sid)
@@ -795,9 +799,37 @@ async def handle_audio_stream(websocket: WebSocket, call_sid: str):
     except Exception as e:
         logger.error("Audio stream error for call %s: %s", call_sid, e)
     finally:
+        if audio_chunks:
+            _spawn_call_processing(
+                call_sid, audio_chunks, from_number, to_number,
+                context.id if context else "unknown",
+                context,
+            )
         if processor:
             await remove_personaplex_processor(call_sid)
         logger.info("Audio stream ended for call %s", call_sid)
+
+
+def _spawn_call_processing(call_sid, audio_chunks, from_number, to_number, context_id, business_context=None):
+    """Spawn background task to process call recording."""
+    # Rough duration estimate: mulaw is 8000 bytes/sec
+    total_bytes = sum(len(c) for c in audio_chunks)
+    duration = total_bytes // 8000
+    asyncio.create_task(_run_call_processing(
+        call_sid, audio_chunks, from_number, to_number, context_id, duration, business_context,
+    ))
+
+
+async def _run_call_processing(call_sid, chunks, from_num, to_num, ctx_id, dur, biz_ctx):
+    """Run call intelligence pipeline in background."""
+    try:
+        from ...comms.call_intelligence import process_call_recording
+        await process_call_recording(
+            call_sid, chunks, from_num, to_num, ctx_id, dur,
+            business_context=biz_ctx,
+        )
+    except Exception as e:
+        logger.error("Call processing failed for %s: %s", call_sid, e)
 
 
 async def _generate_sms_reply(body: str, context) -> Optional[str]:

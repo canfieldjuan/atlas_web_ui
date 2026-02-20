@@ -1,0 +1,253 @@
+"""
+Call transcript repository for post-call intelligence.
+
+Provides CRUD operations for call transcripts stored in PostgreSQL.
+"""
+
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Optional
+from uuid import UUID, uuid4
+
+from ..database import get_db_pool
+from ..exceptions import DatabaseUnavailableError, DatabaseOperationError
+
+logger = logging.getLogger("atlas.storage.call_transcript")
+
+
+class CallTranscriptRepository:
+    """Repository for call transcript storage and retrieval."""
+
+    async def create(
+        self,
+        call_sid: str,
+        from_number: str,
+        to_number: str,
+        context_id: str,
+        duration: int,
+    ) -> dict:
+        """Create a new call transcript record. Returns the created row as dict."""
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            raise DatabaseUnavailableError("create call transcript")
+
+        transcript_id = uuid4()
+        now = datetime.now(timezone.utc)
+
+        try:
+            row = await pool.fetchrow(
+                """
+                INSERT INTO call_transcripts (
+                    id, call_sid, from_number, to_number,
+                    business_context_id, duration_seconds, created_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING *
+                """,
+                transcript_id,
+                call_sid,
+                from_number,
+                to_number,
+                context_id,
+                duration,
+                now,
+            )
+            if row:
+                logger.info("Created call transcript %s for call %s", transcript_id, call_sid)
+                return self._row_to_dict(row)
+            raise DatabaseOperationError("create call transcript", Exception("No row returned"))
+        except (DatabaseUnavailableError, DatabaseOperationError):
+            raise
+        except Exception as e:
+            logger.error("Failed to create call transcript: %s", e)
+            raise DatabaseOperationError("create call transcript", e)
+
+    async def update_transcript(self, transcript_id: UUID, transcript: str) -> None:
+        """Store the ASR transcript text."""
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            raise DatabaseUnavailableError("update transcript")
+
+        try:
+            await pool.execute(
+                """
+                UPDATE call_transcripts
+                SET transcript = $2, transcribed_at = $3
+                WHERE id = $1
+                """,
+                transcript_id,
+                transcript,
+                datetime.now(timezone.utc),
+            )
+        except DatabaseUnavailableError:
+            raise
+        except Exception as e:
+            raise DatabaseOperationError("update transcript", e)
+
+    async def update_extraction(
+        self,
+        transcript_id: UUID,
+        summary: str,
+        extracted_data: dict,
+        proposed_actions: list,
+    ) -> None:
+        """Store LLM extraction results."""
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            raise DatabaseUnavailableError("update extraction")
+
+        try:
+            await pool.execute(
+                """
+                UPDATE call_transcripts
+                SET summary = $2, extracted_data = $3::jsonb,
+                    proposed_actions = $4::jsonb, processed_at = $5
+                WHERE id = $1
+                """,
+                transcript_id,
+                summary,
+                json.dumps(extracted_data),
+                json.dumps(proposed_actions),
+                datetime.now(timezone.utc),
+            )
+        except DatabaseUnavailableError:
+            raise
+        except Exception as e:
+            raise DatabaseOperationError("update extraction", e)
+
+    async def update_status(
+        self,
+        transcript_id: UUID,
+        status: str,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Update processing status."""
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            raise DatabaseUnavailableError("update status")
+
+        try:
+            await pool.execute(
+                """
+                UPDATE call_transcripts
+                SET status = $2, error_message = $3
+                WHERE id = $1
+                """,
+                transcript_id,
+                status,
+                error_message,
+            )
+        except DatabaseUnavailableError:
+            raise
+        except Exception as e:
+            raise DatabaseOperationError("update status", e)
+
+    async def mark_notified(self, transcript_id: UUID) -> None:
+        """Mark transcript as notified."""
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            raise DatabaseUnavailableError("mark notified")
+
+        try:
+            await pool.execute(
+                "UPDATE call_transcripts SET notified = TRUE WHERE id = $1",
+                transcript_id,
+            )
+        except DatabaseUnavailableError:
+            raise
+        except Exception as e:
+            raise DatabaseOperationError("mark notified", e)
+
+    async def get_by_call_sid(self, call_sid: str) -> Optional[dict]:
+        """Get a transcript by call SID."""
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            raise DatabaseUnavailableError("get by call sid")
+
+        try:
+            row = await pool.fetchrow(
+                "SELECT * FROM call_transcripts WHERE call_sid = $1",
+                call_sid,
+            )
+            return self._row_to_dict(row) if row else None
+        except DatabaseUnavailableError:
+            raise
+        except Exception as e:
+            raise DatabaseOperationError("get by call sid", e)
+
+    async def get_by_id(self, transcript_id: UUID) -> Optional[dict]:
+        """Get a transcript by ID."""
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            raise DatabaseUnavailableError("get by id")
+
+        try:
+            row = await pool.fetchrow(
+                "SELECT * FROM call_transcripts WHERE id = $1",
+                transcript_id,
+            )
+            return self._row_to_dict(row) if row else None
+        except DatabaseUnavailableError:
+            raise
+        except Exception as e:
+            raise DatabaseOperationError("get by id", e)
+
+    async def get_recent(
+        self,
+        business_context_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Get recent transcripts, optionally filtered by business context."""
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            raise DatabaseUnavailableError("get recent")
+
+        try:
+            if business_context_id:
+                rows = await pool.fetch(
+                    """
+                    SELECT * FROM call_transcripts
+                    WHERE business_context_id = $1
+                    ORDER BY created_at DESC
+                    LIMIT $2
+                    """,
+                    business_context_id,
+                    limit,
+                )
+            else:
+                rows = await pool.fetch(
+                    """
+                    SELECT * FROM call_transcripts
+                    ORDER BY created_at DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+            return [self._row_to_dict(row) for row in rows]
+        except DatabaseUnavailableError:
+            raise
+        except Exception as e:
+            raise DatabaseOperationError("get recent", e)
+
+    def _row_to_dict(self, row) -> dict:
+        """Convert a database row to a dict."""
+        result = dict(row)
+        for key in ("extracted_data", "proposed_actions"):
+            val = result.get(key)
+            if isinstance(val, str):
+                result[key] = json.loads(val)
+            elif val is None:
+                result[key] = {} if key == "extracted_data" else []
+        return result
+
+
+_call_transcript_repo: Optional[CallTranscriptRepository] = None
+
+
+def get_call_transcript_repo() -> CallTranscriptRepository:
+    """Get the global call transcript repository."""
+    global _call_transcript_repo
+    if _call_transcript_repo is None:
+        _call_transcript_repo = CallTranscriptRepository()
+    return _call_transcript_repo
