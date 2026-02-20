@@ -20,7 +20,7 @@ os.environ["ATLAS_PERSONAPLEX_PORT"] = "8998"
 from atlas_brain.services.personaplex.config import get_personaplex_config
 get_personaplex_config.cache_clear()
 
-from atlas_brain.comms.config import EFFINGHAM_MAIDS_CONTEXT
+from atlas_brain.comms import EFFINGHAM_MAIDS_CONTEXT
 from atlas_brain.comms.personaplex_processor import (
     PersonaPlexProcessor,
     PersonaPlexCallState,

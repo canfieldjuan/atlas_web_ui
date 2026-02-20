@@ -13,8 +13,7 @@ from zoneinfo import ZoneInfo
 import dateparser
 
 from ..config import settings
-from ..comms.config import EFFINGHAM_MAIDS_CONTEXT, BusinessContext
-from ..comms.context import get_context_router
+from ..comms import EFFINGHAM_MAIDS_CONTEXT, BusinessContext, get_context_router
 from ..storage.repositories.appointment import get_appointment_repo
 from ..storage.exceptions import DatabaseUnavailableError, DatabaseOperationError
 from .base import ToolParameter, ToolResult
@@ -45,7 +44,7 @@ def _get_default_context() -> Optional[BusinessContext]:
 
     # If not registered, try to register it (for standalone tool usage)
     try:
-        from ..comms.config import EFFINGHAM_MAIDS_CONTEXT
+        from ..comms import EFFINGHAM_MAIDS_CONTEXT
         if EFFINGHAM_MAIDS_CONTEXT.scheduling.enabled:
             router.register_context(EFFINGHAM_MAIDS_CONTEXT)
             logger.info("Auto-registered effingham_maids context for scheduling")
