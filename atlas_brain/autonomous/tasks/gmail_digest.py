@@ -323,7 +323,7 @@ class GmailClient:
         plain_text, html_text = _extract_body_parts(payload)
 
         # Prefer plain text; fall back to HTML-to-text.
-        # Some mailers put HTML in the text/plain part — detect and reject.
+        # Some mailers put HTML in the text/plain part -- detect and reject.
         def _looks_like_html(text: str) -> bool:
             sample = text[:500]
             return "<html" in sample.lower() or sample.count("<") > 5 or "@media" in sample

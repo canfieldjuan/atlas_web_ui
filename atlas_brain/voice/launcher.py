@@ -190,7 +190,7 @@ def _create_streaming_agent_runner():
                             "Streaming path: conversation (conf=%.2f)",
                             route_result.confidence
                         )
-                    # Conversation needs LLM — trigger prefill now
+                    # Conversation needs LLM -- trigger prefill now
                     if _voice_pipeline is not None:
                         _voice_pipeline.trigger_prefill()
                 else:
@@ -458,7 +458,7 @@ async def _stream_llm_response(
             ))
             return True
 
-        # Streaming produced no output — re-stash prev_usage_ids so the
+        # Streaming produced no output -- re-stash prev_usage_ids so the
         # fallback agent's pre-pop can find them for correction feedback.
         if prev_usage_ids and session_id:
             try:

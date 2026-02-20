@@ -117,7 +117,7 @@ class AlertManager:
             priority=20,  # High priority
         ))
 
-        # Presence transition rules — hook tasks can bind to these
+        # Presence transition rules -- hook tasks can bind to these
         self.add_rule(AlertRule(
             name="presence_arrival",
             event_types=["presence"],

@@ -121,7 +121,7 @@ class LocationTool:
 
     async def _reverse_geocode(self, lat: float, lon: float) -> str | None:
         """Reverse geocode via HA zones first, then Nominatim as fallback."""
-        # Try HA zones — check if coordinates fall within a known zone
+        # Try HA zones -- check if coordinates fall within a known zone
         try:
             client = await self._ensure_client()
             url = f"{self._ha_config.url}/api/states"

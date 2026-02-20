@@ -393,7 +393,9 @@ class SemanticIntentRouter:
                     route_time_ms=route_time,
                 )
 
-        # If above threshold, use semantic result
+        # If above threshold, use semantic result.
+        # NOTE: entity_name is NOT extracted on this path (no LLM call).
+        # Entity graph traversal only fires when LLM fallback runs.
         if similarity >= threshold:
             route_time = (time.time() - start) * 1000
             action_category, tool_name = ROUTE_TO_ACTION.get(
@@ -412,7 +414,7 @@ class SemanticIntentRouter:
                 fast_path_ok=tool_name in PARAMETERLESS_TOOLS if tool_name else False,
             )
 
-        # LLM fallback — skip for very short queries (1-2 words) where the
+        # LLM fallback -- skip for very short queries (1-2 words) where the
         # LLM won't have enough context to do better than conversation default,
         # and the 2s timeout wastes latency competing with prefill on the GPU.
         word_count = len(query.split())
@@ -442,7 +444,7 @@ class SemanticIntentRouter:
                     entity_name=llm_entity,
                 )
             else:
-                # LLM fallback failed (timeout/parse error) — log anyway
+                # LLM fallback failed (timeout/parse error) -- log anyway
                 route_time = (time.time() - start) * 1000
                 self._log_fallback(
                     query, route_name, similarity,
@@ -515,7 +517,7 @@ class SemanticIntentRouter:
 
         model_name = self._config.llm_fallback_model
         if not model_name:
-            # No dedicated model configured — use the main LLM
+            # No dedicated model configured -- use the main LLM
             from . import llm_registry
             return llm_registry.get_active()
 

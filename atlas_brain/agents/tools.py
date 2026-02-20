@@ -21,8 +21,8 @@ class AtlasAgentTools:
     Tools system for Atlas Agent.
 
     Provides unified access to:
-    - Intent parsing (natural language → Intent)
-    - Action execution (Intent → device actions)
+    - Intent parsing (natural language -> Intent)
+    - Action execution (Intent -> device actions)
     - Built-in tools (weather, traffic, time, location)
 
     This class wraps existing components rather than replacing them,

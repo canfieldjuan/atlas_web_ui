@@ -512,7 +512,7 @@ class FrameProcessor:
             speech_prob = self._get_speech_prob(frame_bytes)
             finalize = self.segmenter.add_frame(frame_bytes, speech_prob, asr_active)
 
-            # Early silence detection — start preparation during conversation silence.
+            # Early silence detection -- start preparation during conversation silence.
             # Track raw silence ourselves (segmenter's counter is reset by sliding window).
             if self._came_from_conversation and self.on_early_silence is not None:
                 if speech_prob <= self.segmenter._speech_threshold and not asr_active:

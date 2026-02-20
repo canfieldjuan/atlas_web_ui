@@ -77,7 +77,7 @@ async def detect_intent(state: ReceptionistAgentState) -> ReceptionistAgentState
             new_phase = "collecting"
             action_type = "tool_use"
             tools_to_call = ["check_availability"]
-            logger.info("Question phase → now wants estimate")
+            logger.info("Question phase -> now wants estimate")
         elif _is_not_interested(text_lower):
             logger.info("Caller not interested, wrapping up")
 

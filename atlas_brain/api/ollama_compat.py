@@ -4,10 +4,10 @@ Allows Home Assistant's built-in Ollama integration to use Atlas
 as its conversation agent by mimicking the Ollama API surface.
 
 HA's ollama Python client calls:
-  GET  /                — root health check ("Ollama is running")
-  GET  /api/version     — version info
-  GET  /api/tags        — list available models (setup/discovery)
-  POST /api/chat        — chat completions (conversation)
+  GET  /                -- root health check ("Ollama is running")
+  GET  /api/version     -- version info
+  GET  /api/tags        -- list available models (setup/discovery)
+  POST /api/chat        -- chat completions (conversation)
 """
 
 import logging
@@ -81,19 +81,19 @@ class OllamaChatResponse(BaseModel):
 
 @router.get("/", response_class=PlainTextResponse)
 async def root():
-    """Root health check — ollama client checks this on connect."""
+    """Root health check -- ollama client checks this on connect."""
     return "Ollama is running"
 
 
 @router.get("/api/version")
 async def version():
-    """Version endpoint — ollama client may check this."""
+    """Version endpoint -- ollama client may check this."""
     return {"version": "0.13.2"}
 
 
 @router.get("/api/tags")
 async def list_models():
-    """List available models — HA calls this during integration setup."""
+    """List available models -- HA calls this during integration setup."""
     now = time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime())
     return OllamaTagsResponse(
         models=[
@@ -114,7 +114,7 @@ async def chat(
     request: OllamaChatRequest,
     x_session_id: Optional[str] = Header(None),
 ):
-    """Ollama-compatible chat endpoint — routes through full Atlas agent."""
+    """Ollama-compatible chat endpoint -- routes through full Atlas agent."""
     if request.stream:
         raise HTTPException(status_code=400, detail="Streaming not supported yet")
 

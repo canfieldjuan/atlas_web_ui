@@ -542,3 +542,95 @@ class TestSearchWithTraversal:
 
         client.search.assert_not_called()
         assert result.facts == []
+
+
+# ---------------------------------------------------------------------------
+# 5. Search expired-fact filtering
+# ---------------------------------------------------------------------------
+
+
+class TestSearchExpiredFiltering:
+    """Verify search() filters out facts with expired_at set."""
+
+    @pytest.fixture
+    def mock_settings(self):
+        with patch("atlas_brain.memory.rag_client.settings") as mock:
+            mock.memory.enabled = True
+            mock.memory.base_url = "http://localhost:8003"
+            mock.memory.timeout = 10.0
+            mock.memory.group_id = "test-group"
+            mock.memory.context_results = 5
+            yield mock
+
+    @pytest.mark.asyncio
+    async def test_expired_facts_excluded(self, mock_settings):
+        """Facts with expired_at set are excluded from search results."""
+        client = RAGClient(base_url="http://localhost:8003")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "facts": [
+                {"uuid": "a1", "name": "active", "fact": "Active fact"},
+                {
+                    "uuid": "e1", "name": "expired", "fact": "Expired fact",
+                    "expired_at": "2025-01-01T00:00:00Z",
+                },
+                {"uuid": "a2", "name": "active2", "fact": "Another active"},
+            ],
+        }
+
+        mock_http = AsyncMock()
+        mock_http.post = AsyncMock(return_value=mock_resp)
+        mock_http.is_closed = False
+        client._client = mock_http
+
+        result = await client.search("test query")
+        assert len(result.facts) == 2
+        uuids = {f.uuid for f in result.facts}
+        assert "a1" in uuids
+        assert "a2" in uuids
+        assert "e1" not in uuids
+
+    @pytest.mark.asyncio
+    async def test_all_expired_returns_empty(self, mock_settings):
+        """When all facts are expired, result is empty."""
+        client = RAGClient(base_url="http://localhost:8003")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "facts": [
+                {
+                    "uuid": "e1", "name": "old", "fact": "Old fact",
+                    "expired_at": "2024-06-01T00:00:00Z",
+                },
+            ],
+        }
+
+        mock_http = AsyncMock()
+        mock_http.post = AsyncMock(return_value=mock_resp)
+        mock_http.is_closed = False
+        client._client = mock_http
+
+        result = await client.search("test query")
+        assert len(result.facts) == 0
+
+    @pytest.mark.asyncio
+    async def test_no_expired_keeps_all(self, mock_settings):
+        """When no facts are expired, all are kept."""
+        client = RAGClient(base_url="http://localhost:8003")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "facts": [
+                {"uuid": "a1", "name": "f1", "fact": "Fact 1"},
+                {"uuid": "a2", "name": "f2", "fact": "Fact 2"},
+            ],
+        }
+
+        mock_http = AsyncMock()
+        mock_http.post = AsyncMock(return_value=mock_resp)
+        mock_http.is_closed = False
+        client._client = mock_http
+
+        result = await client.search("test query")
+        assert len(result.facts) == 2

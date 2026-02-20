@@ -395,7 +395,7 @@ async def retrieve_memory(
             return Command(update=fail_update, goto="respond")
         return Command(update=fail_update, goto="parse")
 
-    # Memory disabled — don't set retrieved_sources so gather_context
+    # Memory disabled -- don't set retrieved_sources so gather_context
     # can still do its own search if include_rag is True
     if action_type == "conversation" and state.get("confidence", 0) >= conv_threshold:
         return Command(goto="respond")

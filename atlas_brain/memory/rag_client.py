@@ -140,6 +140,8 @@ class RAGClient:
             data = resp.json()
             facts = []
             for f in data.get("facts", []):
+                if f.get("expired_at"):
+                    continue
                 facts.append(SearchSource(
                     uuid=f.get("uuid", ""),
                     name=f.get("name", ""),

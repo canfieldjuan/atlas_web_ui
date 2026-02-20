@@ -5,7 +5,7 @@ def format_minutes(minutes: int, *, round_to: int = 0) -> str:
     """Format minutes-since-midnight as '3:45 PM'.
 
     Args:
-        minutes: Minutes since midnight (0–1439).
+        minutes: Minutes since midnight (0-1439).
         round_to: Round to nearest N minutes (0 = no rounding).
     """
     if round_to > 0:

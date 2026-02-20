@@ -4,7 +4,7 @@ In-memory event queue with dedup, batching, and debounce.
 Routes alert-triggered hook task dispatches through a queue that
 collapses rapid-fire duplicate events before invoking HookManager.
 Latency-sensitive callbacks (TTS, ntfy, DB persistence) still fire
-immediately in AlertManager — only hook dispatch is debounced.
+immediately in AlertManager -- only hook dispatch is debounced.
 """
 
 import asyncio
@@ -97,7 +97,7 @@ class EventQueue:
                 last_seen=now,
             )
 
-        # Enforce max batch size — flush immediately if full
+        # Enforce max batch size -- flush immediately if full
         if len(self._pending) >= self._config.max_batch_size:
             await self._flush()
             return
@@ -127,7 +127,7 @@ class EventQueue:
 
     @staticmethod
     def _dedup_key(event: AlertEvent, rule: AlertRule) -> str:
-        """(rule_name, source_id, class_name) — collapses repeated detections."""
+        """(rule_name, source_id, class_name) -- collapses repeated detections."""
         class_name = event.get_field("class_name", "")
         return f"{rule.name}:{event.source_id}:{class_name}"
 

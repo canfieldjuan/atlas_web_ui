@@ -17,7 +17,7 @@ logger = logging.getLogger("atlas.api.autonomous")
 router = APIRouter(prefix="/autonomous", tags=["autonomous"])
 
 
-# ── Request / Response models ─────────────────────────────────────────
+# -- Request / Response models ---------------------------------------
 
 class TaskCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
@@ -55,7 +55,7 @@ class TaskUpdateRequest(BaseModel):
     metadata: Optional[dict[str, Any]] = None
 
 
-# ── Status endpoint (MUST be before /{task_id}) ──────────────────────
+# -- Status endpoint (MUST be before /{task_id}) ----------------------
 
 @router.get("/status/summary")
 async def get_status_summary():
@@ -73,7 +73,7 @@ async def get_status_summary():
     }
 
 
-# ── CRUD endpoints ───────────────────────────────────────────────────
+# -- CRUD endpoints ---------------------------------------------------
 
 @router.get("/")
 async def list_tasks(include_disabled: bool = False):
@@ -211,7 +211,7 @@ async def delete_task(task_id: UUID):
     return {"deleted": True, "task_id": str(task_id)}
 
 
-# ── Action endpoints ─────────────────────────────────────────────────
+# -- Action endpoints -------------------------------------------------
 
 @router.post("/{task_id}/run", status_code=202)
 async def run_task_now(task_id: UUID):

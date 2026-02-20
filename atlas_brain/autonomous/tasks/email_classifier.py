@@ -3,7 +3,7 @@ Rule-based email classifier for Gmail digest pre-processing.
 
 Classifies emails into categories and priorities using a deterministic
 waterfall of signals (Gmail labels, unsubscribe headers, sender domain,
-subject keywords) — no LLM calls needed.
+subject keywords) -- no LLM calls needed.
 
 The classifier runs between email fetch and LLM synthesis so the LLM
 only needs to summarize pre-classified emails.
@@ -32,7 +32,7 @@ class EmailClassification:
 
 
 # ---------------------------------------------------------------------------
-# Built-in domain → category map (overridable via data/email_domains.json)
+# Built-in domain -> category map (overridable via data/email_domains.json)
 # ---------------------------------------------------------------------------
 
 _DEFAULT_DOMAIN_MAP: dict[str, str] = {
@@ -79,7 +79,7 @@ _DEFAULT_DOMAIN_MAP: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Subject keyword patterns → (category, optional priority override)
+# Subject keyword patterns -> (category, optional priority override)
 # ---------------------------------------------------------------------------
 
 _SUBJECT_PATTERNS: list[tuple[str, str, Optional[str]]] = [
@@ -93,7 +93,7 @@ _SUBJECT_PATTERNS: list[tuple[str, str, Optional[str]]] = [
 
 
 # ---------------------------------------------------------------------------
-# Gmail label → category map
+# Gmail label -> category map
 # ---------------------------------------------------------------------------
 
 _GMAIL_LABEL_MAP: dict[str, tuple[str, float]] = {
@@ -116,8 +116,8 @@ def _lookup_domain(domain: str, domain_map: dict[str, str]) -> str | None:
     """
     Look up a domain in the map, falling back to the parent domain.
 
-    e.g. "mail.cashapp.com" → try "mail.cashapp.com" first,
-    then "cashapp.com".  Handles up to one level of subdomain stripping.
+    e.g. "mail.cashapp.com" -> try "mail.cashapp.com" first,
+    then "cashapp.com". Handles up to one level of subdomain stripping.
     """
     if not domain:
         return None
@@ -138,11 +138,11 @@ class EmailRuleClassifier:
 
     Layers (checked in order, first match wins):
       1. Gmail category labels (CATEGORY_PROMOTIONS, etc.)
-      2. List-Unsubscribe header → newsletter (default)
+      2. List-Unsubscribe header -> newsletter (default)
       3. Sender domain map
       4. Subject keyword regex patterns
       5. Default by remaining Gmail labels
-      6. Fallback → "other"
+      6. Fallback -> "other"
     """
 
     def __init__(self, domain_map_file: Optional[str] = None) -> None:
@@ -159,7 +159,7 @@ class EmailRuleClassifier:
         ]
 
     def _load_domain_overrides(self, path: str) -> None:
-        """Merge user-provided domain→category overrides from JSON file."""
+        """Merge user-provided domain->category overrides from JSON file."""
         try:
             p = Path(path)
             if p.exists():
@@ -246,13 +246,13 @@ class EmailRuleClassifier:
             domain = _extract_domain(sender)
             domain_cat = _lookup_domain(domain, self._domain_map)
             if domain_cat:
-                # e.g. cashapp.com with unsubscribe → still "financial"
+                # e.g. cashapp.com with unsubscribe -> still "financial"
                 pri = self._assign_priority(domain_cat, subject, has_unsubscribe, label_ids)
                 return EmailClassification(
                     category=domain_cat,
                     priority=pri,
                     confidence=0.90,
-                    reason=f"Unsubscribe + domain {domain} → {domain_cat}",
+                    reason=f"Unsubscribe + domain {domain} -> {domain_cat}",
                 )
             pri = self._assign_priority("newsletter", subject, has_unsubscribe, label_ids)
             return EmailClassification(

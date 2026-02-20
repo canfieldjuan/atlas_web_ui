@@ -1,7 +1,7 @@
 """
 Live integration tests for the autonomous system and brain-edge state sync.
 
-NO MOCKS — exercises real DB, real state machines, real timers.
+NO MOCKS -- exercises real DB, real state machines, real timers.
 Requires a running PostgreSQL with Atlas schema.
 
 Run:
@@ -41,7 +41,7 @@ async def ensure_db():
 
 
 # ===================================================================
-# 1. PRESENCE TRACKER — live state machine + DB persistence
+# 1. PRESENCE TRACKER -- live state machine + DB persistence
 # ===================================================================
 
 class TestPresenceTrackerLive:
@@ -49,7 +49,7 @@ class TestPresenceTrackerLive:
 
     @pytest.mark.asyncio
     async def test_full_arrival_departure_cycle(self):
-        """Known person arrives → identified → leaves → empty (after delay)."""
+        """Known person arrives -> identified -> leaves -> empty (after delay)."""
         from atlas_brain.autonomous.presence import (
             OccupancyState,
             PresenceConfig,
@@ -159,7 +159,7 @@ class TestPresenceTrackerLive:
             arrival_cooldown_seconds=0,
         ))
 
-        # Unknown arrives → OCCUPIED
+        # Unknown arrives -> OCCUPIED
         await tracker.on_security_event("person_entered", {
             "name": "unknown", "is_known": False,
         })
@@ -167,7 +167,7 @@ class TestPresenceTrackerLive:
         assert tracker._unknown_count == 1
         assert len(tracker.state.occupants) == 0
 
-        # Known arrives → IDENTIFIED
+        # Known arrives -> IDENTIFIED
         await tracker.on_security_event("person_entered", {
             "name": "KnownUser", "is_known": True,
         })
@@ -180,7 +180,7 @@ class TestPresenceTrackerLive:
 
 
 # ===================================================================
-# 2. EVENT QUEUE — live dedup, debounce, flush
+# 2. EVENT QUEUE -- live dedup, debounce, flush
 # ===================================================================
 
 class TestEventQueueLive:
@@ -237,7 +237,7 @@ class TestEventQueueLive:
         assert queue.stats["total_flushed"] == 1
         assert queue.stats["pending"] == 0
 
-        print(f"\n  [PASS] Dedup+flush: 5 events → 1 queued (count=5), flushed after debounce")
+        print(f"\n  [PASS] Dedup+flush: 5 events -> 1 queued (count=5), flushed after debounce")
         await queue.shutdown()
 
     @pytest.mark.asyncio
@@ -276,12 +276,12 @@ class TestEventQueueLive:
         assert len(flushed) == 1
         assert flushed[0] == 3
 
-        print(f"\n  [PASS] Max batch: 3 distinct events → immediate flush")
+        print(f"\n  [PASS] Max batch: 3 distinct events -> immediate flush")
         await queue.shutdown()
 
 
 # ===================================================================
-# 3. HOOK MANAGER — live cooldown + context injection
+# 3. HOOK MANAGER -- live cooldown + context injection
 # ===================================================================
 
 class TestHookManagerLive:
@@ -303,7 +303,7 @@ class TestHookManagerLive:
         time.sleep(1.1)
         assert not mgr._is_in_cooldown("task_a", "rule_a", 1)
 
-        print(f"\n  [PASS] Cooldown: recorded → in cooldown → expired after 1.1s")
+        print(f"\n  [PASS] Cooldown: recorded -> in cooldown -> expired after 1.1s")
 
     def test_context_injection_with_real_objects(self):
         """Inject alert context using real AlertEvent/AlertRule objects."""
@@ -354,7 +354,7 @@ class TestHookManagerLive:
 
 
 # ===================================================================
-# 4. IDENTITY REPOSITORY — live DB diff_manifest + upsert/get
+# 4. IDENTITY REPOSITORY -- live DB diff_manifest + upsert/get
 # ===================================================================
 
 class TestIdentityRepoLive:
@@ -443,7 +443,7 @@ class TestIdentityRepoLive:
 
 
 # ===================================================================
-# 5. SCHEDULER — live trigger building + DB task loading
+# 5. SCHEDULER -- live trigger building + DB task loading
 # ===================================================================
 
 class TestSchedulerLive:

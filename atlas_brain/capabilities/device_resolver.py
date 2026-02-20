@@ -184,7 +184,7 @@ class DeviceResolver:
                 new_centroids[cap.id] = centroid
                 new_caps[cap.id] = cap
 
-            # Atomic swap — readers see old or new, never partial
+            # Atomic swap -- readers see old or new, never partial
             self._device_centroids = new_centroids
             self._device_caps = new_caps
             self._index_built = True
