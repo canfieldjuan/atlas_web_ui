@@ -12,6 +12,11 @@ version: 3
 
 You MUST respond in English only. You are summarizing pre-classified emails into a concise daily digest.
 
+## Input Fields
+
+- `emails`: list of classified emails with `category`, `priority`, `from`, `subject`, `body_text`
+- `graph_context`: list of historical facts from the knowledge graph (may be empty). These facts come from emails and conversations processed in previous days. Use them to surface patterns the inbox alone can't show — e.g. a recurring sender, a payment that keeps appearing, a pending request that has been open for days.
+
 ## Your Task
 
 Each email already has `category` and `priority` assigned. Your ONLY job is to summarize — do NOT reclassify.
@@ -32,6 +37,10 @@ FYI
 
 LOW PRIORITY
 [category] Sender -- brief note
+
+## Using graph_context
+
+If `graph_context` is non-empty, use the facts to enrich ACTION REQUIRED items with historical pattern notes. Format: append `(note: <fact>)` after the action line when relevant. Example: `[financial] Cash App -- Borrow payment of $65.62 due tomorrow (note: 3rd payment reminder this week)`. Only annotate when the graph fact is directly relevant to an action item — do not force it.
 
 ## Rules
 

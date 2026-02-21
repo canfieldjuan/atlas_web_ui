@@ -217,6 +217,47 @@ async def _send_action_email_notifications(emails: list[dict[str, Any]]) -> None
             logger.warning("Failed to send action email notification for %s: %s", gmail_msg_id, exc)
 
 
+async def _get_email_graph_context(action_emails: list[dict[str, Any]]) -> list[str]:
+    """Query the knowledge graph for historical context about action-required senders.
+
+    Returns a list of fact strings (empty if graph is unavailable or returns nothing).
+    Used to enrich the email triage synthesis: the LLM can surface patterns like
+    "Cash App has sent 3 urgent payment emails this month" from graph history.
+    """
+    if not action_emails:
+        return []
+
+    try:
+        from ...memory.rag_client import get_rag_client
+
+        # Extract unique sender display names (skip bare email addresses)
+        senders = []
+        seen: set[str] = set()
+        for e in action_emails[:6]:
+            raw = e.get("from", "")
+            name = raw.split("<")[0].strip().strip('"').strip()
+            if name and name not in seen and "@" not in name:
+                senders.append(name)
+                seen.add(name)
+
+        if not senders:
+            # Fall back to a generic query when all senders are bare addresses
+            query = "recent urgent email obligations and action items"
+        else:
+            query = f"emails and obligations from {', '.join(senders[:4])}"
+
+        client = get_rag_client()
+        result = await client.search(query, max_facts=6)
+        facts = [s.fact for s in result.facts if s.fact]
+        if facts:
+            logger.debug("Email graph context: %d facts for query %r", len(facts), query)
+        return facts
+
+    except Exception as e:
+        logger.debug("Email graph context fetch failed: %s", e)
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Gmail API client
 # ---------------------------------------------------------------------------
@@ -527,6 +568,9 @@ async def run(task: ScheduledTask) -> dict:
     if action_emails:
         await _send_action_email_notifications(action_emails)
 
+    # --- Query knowledge graph for historical context about action senders ---
+    graph_context = await _get_email_graph_context(action_emails)
+
     # --- Build result for LLM synthesis ---
     # Slim down each email to only what the LLM needs for summarization.
     # Classification is already done; the LLM just summarizes.
@@ -564,6 +608,7 @@ async def run(task: ScheduledTask) -> dict:
         "new_emails": len(emails),
         "already_processed": len(already_processed),
         "emails": emails_for_llm,
+        "graph_context": graph_context,
         "summary": " ".join(summary_parts),
     }
 

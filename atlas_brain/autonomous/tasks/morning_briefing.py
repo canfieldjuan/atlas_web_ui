@@ -80,6 +80,9 @@ async def run(task: ScheduledTask) -> dict:
     # 5. Pending proactive actions
     result["actions"] = await _get_pending_actions()
 
+    # 6. Knowledge graph context — historical facts about obligations and deadlines
+    result["graph_context"] = await _get_graph_context()
+
     # Build summary
     result["summary"] = _build_summary(result, security_hours)
 
@@ -166,6 +169,31 @@ async def _get_pending_actions() -> dict:
     except Exception as e:
         logger.warning("Pending actions fetch failed: %s", e)
         return {"count": 0, "items": [], "error": str(e)}
+
+
+async def _get_graph_context() -> list[str]:
+    """Query the knowledge graph for facts relevant to today's briefing.
+
+    Returns a list of fact strings surfacing obligations, deadlines, and
+    recurring patterns extracted from emails and conversations over time.
+    Empty list if the graph is unavailable or has nothing relevant.
+    """
+    try:
+        from ...memory.rag_client import get_rag_client
+
+        client = get_rag_client()
+        result = await client.search(
+            "financial obligations, deadlines, pending action items, and upcoming commitments",
+            max_facts=8,
+        )
+        facts = [s.fact for s in result.facts if s.fact]
+        if facts:
+            logger.debug("Morning briefing graph context: %d facts", len(facts))
+        return facts
+
+    except Exception as e:
+        logger.debug("Morning briefing graph context fetch failed: %s", e)
+        return []
 
 
 def _build_summary(result: dict, security_hours: int) -> str:

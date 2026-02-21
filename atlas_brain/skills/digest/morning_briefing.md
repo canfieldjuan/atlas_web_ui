@@ -19,6 +19,7 @@ You will receive a JSON object with these sections:
 - `security`: Overnight alert counts, unacknowledged count, vision events
 - `device_health`: Issue count, total devices, healthy count
 - `actions`: Pending proactive action items
+- `graph_context`: List of historical facts from the knowledge graph (may be empty). These are facts extracted from emails and conversations over previous days — financial obligations, recurring contacts, unresolved requests. Weave relevant ones into the briefing where they add useful context (e.g. "Note: Cash App borrow payment has been flagged as overdue twice this week."). Skip if empty.
 - `summary`: A basic pre-built summary (ignore this — you are replacing it)
 
 ## Output Structure
@@ -31,6 +32,7 @@ Produce a natural language briefing in this order:
 4. **Security** — One sentence summarizing overnight activity. If zero alerts, say it was a quiet night. If alerts are high, flag it.
 5. **Devices** — Only mention if there are issues. If all healthy, one short sentence or skip entirely.
 6. **Action Items** — List pending actions if any. If none, skip this section.
+7. **Memory Notes** — If `graph_context` is non-empty and any facts are relevant to today (upcoming deadlines, outstanding obligations, recurring issues), add one brief sentence. Skip entirely if nothing is relevant.
 
 ## Rules
 
