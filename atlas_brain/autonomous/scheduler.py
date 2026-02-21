@@ -354,6 +354,24 @@ class TaskScheduler:
                     task_def = {**task_def, "interval_seconds": _interval_overrides[task_def["name"]]}
                 existing = await repo.get_by_name(task_def["name"])
                 if existing is not None:
+                    # Merge any new metadata keys from the definition into the existing row.
+                    # This propagates code-side metadata changes (e.g. synthesis_llm) to
+                    # already-seeded tasks without overwriting user customisations.
+                    default_meta = task_def.get("metadata") or {}
+                    existing_meta = existing.metadata or {}
+                    new_keys = {k: v for k, v in default_meta.items() if k not in existing_meta}
+                    if new_keys:
+                        merged = {**existing_meta, **new_keys}
+                        from ..storage.database import get_db_pool
+                        pool = get_db_pool()
+                        await pool.execute(
+                            "UPDATE scheduled_tasks SET metadata = $1 WHERE id = $2",
+                            merged, existing.id,
+                        )
+                        logger.info(
+                            "Merged new metadata keys into task '%s': %s",
+                            task_def["name"], list(new_keys),
+                        )
                     continue
 
                 task = await repo.create(
