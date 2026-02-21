@@ -59,7 +59,12 @@ The `---` separator is required between subject and body.
 ## Redraft Handling
 
 If the input JSON contains `"redraft": true`:
-- The user rejected the previous draft. Write a SUBSTANTIALLY different reply.
-- `previous_draft_rejected` shows what was rejected (truncated). Do NOT reuse its phrasing or structure.
-- Try a different angle: different opening, different level of formality, different proposed action.
-- `attempt_number` shows how many attempts. Higher = be more creative with approach.
+- `previous_draft_rejected` shows the rejected draft (truncated). Do NOT reuse its phrasing or structure.
+- `redraft_guidance` explains specifically what the user wants changed — follow it exactly.
+- `attempt_number` shows how many attempts. Higher = be more creative.
+
+**Reason-specific rules:**
+
+- **soften_tone**: Use warmer, more empathetic language. Start with understanding, not requests. Avoid imperatives.
+- **be_shorter**: Cut ruthlessly. One main point + one clear next step. No pleasantries, no background context.
+- **wrong_info + graph_context**: `graph_context` is a list of verified facts from memory about the sender/organization. Use these to correct the draft. Only assert information from the original email or graph_context — do not invent facts.
