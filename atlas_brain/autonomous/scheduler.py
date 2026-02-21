@@ -6,6 +6,7 @@ source of truth for task definitions and execution history.
 """
 
 import asyncio
+import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -371,8 +372,8 @@ class TaskScheduler:
                             )
                         else:
                             await pool.execute(
-                                "UPDATE scheduled_tasks SET metadata = $1 WHERE id = $2",
-                                merged, existing.id,
+                                "UPDATE scheduled_tasks SET metadata = $1::jsonb WHERE id = $2",
+                                json.dumps(merged), existing.id,
                             )
                             logger.info(
                                 "Merged new metadata keys into task '%s': %s",
