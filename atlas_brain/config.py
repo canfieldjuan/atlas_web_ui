@@ -1206,6 +1206,56 @@ class DeviceResolverConfig(BaseSettings):
     )
 
 
+class FreeModeConfig(BaseSettings):
+    """Free Conversation Mode — always-on listening when conditions are met.
+
+    When enabled, Atlas stays in conversation mode continuously (no wake word
+    needed) as long as a known speaker is active in the room. Exits automatically
+    after the speaker has been silent/absent for speaker_id_expiry_s seconds.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="ATLAS_FREE_MODE_",
+        env_file=".env",
+        extra="ignore",
+    )
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable free conversation mode (always-on listening)",
+    )
+    require_known_speaker: bool = Field(
+        default=True,
+        description="Only activate when a known speaker is confirmed (requires speaker_id.enabled=True)",
+    )
+    min_speaker_confidence: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="Minimum speaker ID confidence to activate free mode",
+    )
+    ambient_rms_max: float = Field(
+        default=0.02,
+        ge=0.0,
+        description="Max ambient RMS to enter/stay in free mode (only meaningful with rms_adaptive=True)",
+    )
+    poll_interval_s: float = Field(
+        default=10.0,
+        ge=1.0,
+        description="How often (seconds) to re-evaluate entry/exit conditions",
+    )
+    extended_timeout_ms: int = Field(
+        default=30000,
+        ge=5000,
+        description="Conversation silence timeout in free mode (longer than normal)",
+    )
+    speaker_id_expiry_s: float = Field(
+        default=90.0,
+        ge=10.0,
+        description="Seconds after last speaker confirmation before exiting free mode",
+    )
+
+
 class VoiceFilterConfig(BaseSettings):
     """Multi-layer voice filtering configuration for conversation mode.
 
@@ -1595,6 +1645,7 @@ class Settings(BaseSettings):
     intent_router: IntentRouterConfig = Field(default_factory=IntentRouterConfig)
     device_resolver: DeviceResolverConfig = Field(default_factory=DeviceResolverConfig)
     voice_filter: VoiceFilterConfig = Field(default_factory=VoiceFilterConfig)
+    free_mode: FreeModeConfig = Field(default_factory=FreeModeConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     workflows: WorkflowConfig = Field(default_factory=WorkflowConfig)

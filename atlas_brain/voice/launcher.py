@@ -28,6 +28,7 @@ logger = logging.getLogger("atlas.voice.launcher")
 _voice_pipeline: Optional[VoicePipeline] = None
 _voice_thread: Optional[threading.Thread] = None
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
+_free_mode_manager = None  # FreeModeManager instance if enabled
 
 # Early preparation cache for overlapped prefill during conversation silence
 import time as _time
@@ -986,7 +987,7 @@ def start_voice_pipeline(loop: asyncio.AbstractEventLoop) -> bool:
     Returns:
         True if started successfully
     """
-    global _voice_pipeline, _voice_thread, _event_loop
+    global _voice_pipeline, _voice_thread, _event_loop, _free_mode_manager
 
     if _voice_thread is not None and _voice_thread.is_alive():
         logger.warning("Voice pipeline already running")
@@ -1017,12 +1018,34 @@ def start_voice_pipeline(loop: asyncio.AbstractEventLoop) -> bool:
     _voice_thread.start()
 
     logger.info("Voice pipeline started in background thread")
+
+    # Start free mode evaluator if enabled
+    if settings.free_mode.enabled:
+        try:
+            from .free_mode import FreeModeManager
+            _free_mode_manager = FreeModeManager(
+                pipeline=_voice_pipeline,
+                config=settings.free_mode,
+            )
+            _free_mode_manager.start()
+            logger.info("Free conversation mode evaluator started")
+        except Exception as e:
+            logger.warning("Failed to start free mode evaluator: %s", e)
+
     return True
 
 
 def stop_voice_pipeline() -> None:
     """Stop the voice pipeline."""
-    global _voice_pipeline, _voice_thread
+    global _voice_pipeline, _voice_thread, _free_mode_manager
+
+    # Stop free mode evaluator first
+    if _free_mode_manager is not None:
+        try:
+            _free_mode_manager.stop()
+        except Exception as e:
+            logger.warning("Error stopping free mode evaluator: %s", e)
+        _free_mode_manager = None
 
     if _voice_pipeline is not None:
         try:

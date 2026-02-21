@@ -796,6 +796,8 @@ class VoicePipeline:
         # Session ID stored as string for context passing, converted to UUID for database ops
         self.session_id = str(uuid.uuid4())
         self.node_id = node_id
+        # Free conversation mode flag — set by FreeModeManager
+        self._free_mode_active = False
         self.playback = PlaybackController(tts)
         # Monotonic counter incremented on each new command; checked before
         # speaking so that a slow command cannot overwrite a newer one's output.
@@ -1441,6 +1443,14 @@ class VoicePipeline:
         logger.info("Conversation mode ended (timeout)")
         # Reset turn count when conversation ends
         self.frame_processor.reset_turn_count()
+        # Free mode: immediately re-enter conversation mode so Atlas
+        # keeps listening without requiring a wake word.
+        if self._free_mode_active:
+            logger.info("Free mode active — resuming conversation after timeout")
+            delay_sec = self.conversation_start_delay_ms / 1000.0
+            timer = threading.Timer(delay_sec, self._enter_conversation_mode_delayed)
+            timer.daemon = True
+            timer.start()
 
     def _on_turn_limit_reached(self):
         """Called when turn limit is reached in conversation mode."""
@@ -1637,6 +1647,14 @@ class VoicePipeline:
         except Exception as e:
             logger.debug("Could not update context from speaker ID: %s", e)
 
+        # Notify free mode evaluator so it refreshes its speaker heartbeat
+        try:
+            from ..voice.launcher import _free_mode_manager
+            if _free_mode_manager is not None:
+                _free_mode_manager.notify_speaker_confirmed(match.confidence)
+        except Exception:
+            pass
+
     def _build_context(self) -> Dict[str, Any]:
         """Build context dict with session, node, and speaker info."""
         ctx = {
@@ -1649,6 +1667,48 @@ class VoicePipeline:
                 ctx["speaker_id"] = str(self._last_speaker_match.user_id)
             ctx["speaker_confidence"] = self._last_speaker_match.confidence
         return ctx
+
+    def enter_free_mode(self, timeout_ms: int = 30000) -> None:
+        """Enter free conversation mode.
+
+        - Disables turn limit so conversation never requires a wake word.
+        - Extends conversation timeout to keep listening longer between turns.
+        - Enters conversation mode immediately if currently in listening state.
+
+        Called by FreeModeManager when entry conditions are met.
+        """
+        if self._free_mode_active:
+            return
+        if not self.conversation_mode_enabled:
+            logger.warning("Free mode: conversation_mode_enabled=False, skipping")
+            return
+        logger.info("Free conversation mode: ACTIVATED (timeout=%dms)", timeout_ms)
+        self._free_mode_active = True
+        # Disable turn limit for the duration of free mode
+        self.frame_processor.turn_limit_enabled = False
+        # Extend conversation timeout
+        self.frame_processor.set_conversation_timeout(timeout_ms)
+        # Enter conversation mode immediately if currently idle
+        if self.frame_processor.state == "listening":
+            self.frame_processor.enter_conversation_mode()
+
+    def exit_free_mode(self) -> None:
+        """Exit free conversation mode and restore original settings.
+
+        Called by FreeModeManager when conditions are no longer met
+        (speaker absent, ambient noise too high, etc.).
+        """
+        if not self._free_mode_active:
+            return
+        logger.info("Free conversation mode: DEACTIVATED")
+        self._free_mode_active = False
+        # Restore original turn limit setting from config
+        self.frame_processor.turn_limit_enabled = self.turn_limit_enabled
+        # Restore original conversation timeout
+        self.frame_processor.set_conversation_timeout(self.conversation_timeout_ms)
+        # Exit conversation mode → back to wake-word listening
+        if self.frame_processor.state == "conversing":
+            self.frame_processor.exit_conversation_mode("free_mode_exit")
 
     def set_workflow_active(self) -> None:
         """Widen segmenter thresholds and conversation timeout for workflow mode."""
