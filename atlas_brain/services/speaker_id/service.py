@@ -343,9 +343,21 @@ class SpeakerIDService:
 
         # Store in database
         from ...storage.repositories.speaker import get_speaker_repo
+        from ...storage.repositories.profile import get_profile_repo
+        from ...config import settings
 
         repo = get_speaker_repo()
         await repo.save_speaker_embedding(session.user_id, avg_embedding)
+
+        # Ensure a profile row exists with the speaker's name and timezone
+        profile_repo = get_profile_repo()
+        profile = await profile_repo.get_or_create_profile(session.user_id)
+        if not profile.display_name:
+            await profile_repo.update_profile(
+                session.user_id,
+                display_name=session.user_name,
+                timezone=settings.reminder.default_timezone,
+            )
 
         # Update cache
         self._speaker_cache[session.user_id] = avg_embedding
