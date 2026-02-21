@@ -159,7 +159,7 @@ class TaskScheduler:
             "task_type": "builtin",
             "schedule_type": "cron",
             "cron_expression": "0 6 * * *",
-            "timeout_seconds": 600,
+            "timeout_seconds": 1800,  # 30 min: ~80s/message * 20 max emails + overhead
             "metadata": {"builtin_handler": "email_graph_sync"},
         },
         {

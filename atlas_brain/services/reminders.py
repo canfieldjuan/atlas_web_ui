@@ -275,6 +275,26 @@ class ReminderService:
         except asyncio.CancelledError:
             logger.debug("Periodic reload loop cancelled")
 
+    async def _push_ntfy(self, reminder: Reminder) -> None:
+        """Push reminder to ntfy. Fire-and-forget; failures are logged, not raised."""
+        if not settings.alerts.ntfy_enabled:
+            return
+        try:
+            import httpx
+
+            url = f"{settings.alerts.ntfy_url.rstrip('/')}/{settings.alerts.ntfy_topic}"
+            repeat_tag = ",repeat" if reminder.repeat_pattern else ""
+            headers = {
+                "Title": "Reminder",
+                "Priority": "high",
+                "Tags": f"alarm_clock{repeat_tag}",
+            }
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.post(url, content=reminder.message.encode(), headers=headers)
+            logger.info("Pushed reminder ntfy: %s", reminder.message[:60])
+        except Exception as e:
+            logger.warning("ntfy push failed for reminder %s: %s", reminder.id, e)
+
     async def _on_reminder_due(self, reminder: Reminder) -> None:
         """
         Handle reminder delivery.
@@ -289,8 +309,9 @@ class ReminderService:
         # in a single transaction to prevent lost reminders on partial failure
         next_reminder = await repo.deliver_recurring(reminder)
 
-        # Send to centralized alert system
+        # Send to centralized alert system (TTS) and push ntfy in parallel
         await self._send_to_alerts(reminder)
+        await self._push_ntfy(reminder)
 
         # Also trigger legacy callback if set (for backwards compatibility)
         if self._alert_callback:
