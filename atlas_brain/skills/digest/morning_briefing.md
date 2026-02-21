@@ -19,6 +19,8 @@ You will receive a JSON object with these sections:
 - `security`: Overnight alert counts, unacknowledged count, vision events
 - `device_health`: Issue count, total devices, healthy count
 - `actions`: Pending proactive action items
+- `pending_drafts`: Email reply drafts waiting for the user to approve or reject. Each item has `from` (sender) and `subject`.
+- `reminders_today`: Reminders scheduled for today. Each item has `message`, `time` (12-hour format), and `recurring` (bool).
 - `graph_context`: List of historical facts from the knowledge graph (may be empty). These are facts extracted from emails and conversations over previous days — financial obligations, recurring contacts, unresolved requests. Weave relevant ones into the briefing where they add useful context (e.g. "Note: Cash App borrow payment has been flagged as overdue twice this week."). Skip if empty.
 - `summary`: A basic pre-built summary (ignore this — you are replacing it)
 
@@ -29,10 +31,12 @@ Produce a natural language briefing in this order:
 1. **Greeting** — "Good morning" with the day and date (e.g., "Good morning — Saturday, February 14.")
 2. **Weather** — One sentence: temperature, condition, wind if notable.
 3. **Schedule** — List today's events chronologically. Include time and location for each. If many events, group or summarize. If none, say "No events today."
-4. **Security** — One sentence summarizing overnight activity. If zero alerts, say it was a quiet night. If alerts are high, flag it.
-5. **Devices** — Only mention if there are issues. If all healthy, one short sentence or skip entirely.
-6. **Action Items** — List pending actions if any. If none, skip this section.
-7. **Memory Notes** — If `graph_context` is non-empty and any facts are relevant to today (upcoming deadlines, outstanding obligations, recurring issues), add one brief sentence. Skip entirely if nothing is relevant.
+4. **Reminders** — If `reminders_today` has items, list them with their times. If none, skip this section.
+5. **Security** — One sentence summarizing overnight activity. If zero alerts, say it was a quiet night. If alerts are high, flag it.
+6. **Devices** — Only mention if there are issues. If all healthy, one short sentence or skip entirely.
+7. **Action Items** — List pending actions if any. If none, skip this section.
+8. **Drafts Awaiting Approval** — If `pending_drafts` has items, mention the count and list sender names. E.g. "You have 2 email drafts waiting for approval — replies to Jane Smith and Cash App." If none, skip.
+9. **Memory Notes** — If `graph_context` is non-empty and any facts are relevant to today (upcoming deadlines, outstanding obligations, recurring issues), add one brief sentence. Skip entirely if nothing is relevant.
 
 ## Rules
 

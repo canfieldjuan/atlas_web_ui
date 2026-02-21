@@ -80,7 +80,13 @@ async def run(task: ScheduledTask) -> dict:
     # 5. Pending proactive actions
     result["actions"] = await _get_pending_actions()
 
-    # 6. Knowledge graph context — historical facts about obligations and deadlines
+    # 6. Email drafts awaiting approval
+    result["pending_drafts"] = await _get_pending_drafts()
+
+    # 7. Reminders due today
+    result["reminders_today"] = await _get_reminders_today()
+
+    # 8. Knowledge graph context — historical facts about obligations and deadlines
     result["graph_context"] = await _get_graph_context()
 
     # Build summary
@@ -171,6 +177,87 @@ async def _get_pending_actions() -> dict:
         return {"count": 0, "items": [], "error": str(e)}
 
 
+async def _get_pending_drafts() -> dict:
+    """Fetch email drafts waiting for user approval."""
+    try:
+        from ...storage.database import get_db_pool
+
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            return {"count": 0, "items": []}
+
+        rows = await pool.fetch(
+            """
+            SELECT id, original_from, draft_subject, created_at
+            FROM email_drafts
+            WHERE status = 'pending_approval'
+              AND parent_draft_id IS NULL
+            ORDER BY created_at DESC
+            LIMIT 5
+            """,
+        )
+        return {
+            "count": len(rows),
+            "items": [
+                {
+                    "from": r["original_from"],
+                    "subject": r["draft_subject"] or "(no subject)",
+                }
+                for r in rows
+            ],
+        }
+    except Exception as e:
+        logger.warning("Pending drafts fetch failed: %s", e)
+        return {"count": 0, "items": [], "error": str(e)}
+
+
+async def _get_reminders_today() -> dict:
+    """Fetch reminders due today that haven't been delivered yet."""
+    try:
+        from ...storage.database import get_db_pool
+        from ...config import settings as _settings
+        from zoneinfo import ZoneInfo
+        from datetime import timezone, timedelta
+
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            return {"count": 0, "items": []}
+
+        tz = ZoneInfo(_settings.reminder.default_timezone)
+        now_local = datetime.now(tz)
+        start_of_day = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_day = start_of_day + timedelta(days=1)
+
+        rows = await pool.fetch(
+            """
+            SELECT message, due_at, repeat_pattern
+            FROM reminders
+            WHERE delivered = false
+              AND completed = false
+              AND due_at >= $1
+              AND due_at < $2
+            ORDER BY due_at ASC
+            LIMIT 10
+            """,
+            start_of_day.astimezone(timezone.utc),
+            end_of_day.astimezone(timezone.utc),
+        )
+
+        items = []
+        for r in rows:
+            due_local = r["due_at"].astimezone(tz)
+            items.append({
+                "message": r["message"],
+                "time": due_local.strftime("%-I:%M %p"),
+                "recurring": bool(r["repeat_pattern"]),
+            })
+
+        return {"count": len(items), "items": items}
+    except Exception as e:
+        logger.warning("Reminders today fetch failed: %s", e)
+        return {"count": 0, "items": [], "error": str(e)}
+
+
 async def _get_graph_context() -> list[str]:
     """Query the knowledge graph for facts relevant to today's briefing.
 
@@ -247,5 +334,16 @@ def _build_summary(result: dict, security_hours: int) -> str:
     if actions.get("count", 0) > 0:
         items = [a["text"] for a in actions["items"][:3]]
         parts.append(f"Pending: {', '.join(items)}.")
+
+    # Email drafts awaiting approval
+    drafts = result.get("pending_drafts", {})
+    if drafts.get("count", 0) > 0:
+        parts.append(f"{drafts['count']} email draft(s) awaiting approval.")
+
+    # Reminders today
+    reminders = result.get("reminders_today", {})
+    if reminders.get("count", 0) > 0:
+        times = [r["time"] for r in reminders["items"][:3]]
+        parts.append(f"{reminders['count']} reminder(s) today: {', '.join(times)}.")
 
     return " ".join(parts)
