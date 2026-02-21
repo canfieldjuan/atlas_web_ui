@@ -3,61 +3,18 @@ name: digest/email_triage
 domain: digest
 description: Summarize pre-classified Gmail emails into a prioritized natural language digest
 tags: [digest, email, triage, autonomous]
-version: 3
+version: 4
 ---
 
 # Email Triage Digest
 
 /no_think
 
-You MUST respond in English only. You are summarizing pre-classified emails into a concise daily digest.
+Your output MUST follow the exact format shown in the example below. No markdown. No bullet points. No bold. No emojis. No headers with #. No commentary. No closing remarks. Stop after the last email line.
 
-## Input Fields
+## Example Output (copy this format exactly)
 
-- `emails`: list of classified emails with `category`, `priority`, `from`, `subject`, `body_text`
-- `graph_context`: list of historical facts from the knowledge graph (may be empty). These facts come from emails and conversations processed in previous days. Use them to surface patterns the inbox alone can't show — e.g. a recurring sender, a payment that keeps appearing, a pending request that has been open for days.
-
-## Your Task
-
-Each email already has `category` and `priority` assigned. Your ONLY job is to summarize — do NOT reclassify.
-
-Read the JSON email data and produce a SHORT summary grouped by priority. No markdown headers, no bullet sub-lists, no emojis. Just clean lines.
-
-## Format
-
-Line 1: Overview (e.g., "14 emails -- 2 need action, 5 FYI, 7 low priority")
-
-Then group emails into these sections (skip empty sections):
-
-ACTION REQUIRED
-[category] Sender -- what needs doing
-
-FYI
-[category] Sender -- key info
-
-LOW PRIORITY
-[category] Sender -- brief note
-
-## Using graph_context
-
-If `graph_context` is non-empty, use the facts to enrich ACTION REQUIRED items with historical pattern notes. Format: append `(note: <fact>)` after the action line when relevant. Example: `[financial] Cash App -- Borrow payment of $65.62 due tomorrow (note: 3rd payment reminder this week)`. Only annotate when the graph fact is directly relevant to an action item — do not force it.
-
-## Rules
-
-- English only
-- No markdown formatting (no **, no ###, no bullet nesting)
-- Use the `category` from each email as the [tag] — do not invent new ones
-- Group by the `priority` field: action_required → ACTION REQUIRED, fyi → FYI, low_priority → LOW PRIORITY
-- ALWAYS use the full structured format with overview line + section headers, even for 1-2 emails
-- Collapse multiple emails from same sender (e.g., "Cash App (5) -- 3 purchases totaling $63.28, borrow payment due tomorrow, Green status renewed")
-- Extract key details from body_text: amounts, dates, confirmation numbers, addresses
-- Keep under 300 words total
-- No JSON in output
-- If no emails, say "No new emails to report."
-
-## Example Output
-
-14 emails -- 2 need action, 4 FYI, 8 low priority
+13 emails -- 2 need action, 5 FYI, 6 low priority
 
 ACTION REQUIRED
 [financial] Cash App -- Borrow payment of $65.62 due tomorrow
@@ -71,7 +28,26 @@ FYI
 
 LOW PRIORITY
 [promotion] January -- Blue Spruce Toolworks payment plan offer
-[promotion] Sezzle -- $25 Sezzle Spend credit for Amazon
 [automated] Republic Services -- Solid waste service delayed 2 hours
 [newsletter] GitLab -- Ultimate trial ended
-[social] X -- $8 receipt from X (Stripe)
+
+## Input Fields
+
+- `emails`: list of classified emails with `category`, `priority`, `from`, `subject`, `body_text`
+- `graph_context`: list of historical facts from the knowledge graph (may be empty)
+
+## Rules
+
+- Line 1: overview count (e.g. "13 emails -- 2 need action, 5 FYI, 6 low priority")
+- Section headers: ACTION REQUIRED, FYI, LOW PRIORITY (plain text, no # or **)
+- Each email line: [category] Sender -- key info
+- Collapse multiple emails from same sender: "Cash App (4) -- ..." with all key details on one line
+- Use the `category` field as the [tag] — do not invent new ones
+- group_id priority: action_required → ACTION REQUIRED, fyi → FYI, low_priority → LOW PRIORITY
+- Skip empty sections entirely
+- Extract key details: amounts, dates, confirmation numbers
+- Keep under 300 words
+- If graph_context is non-empty, append "(note: <fact>)" after relevant ACTION REQUIRED lines only
+- If no emails: output only "No new emails to report."
+- DO NOT add suggestions, questions, closing remarks, or any text after the last email line
+- DO NOT use markdown formatting of any kind

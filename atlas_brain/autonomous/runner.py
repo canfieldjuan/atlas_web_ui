@@ -140,8 +140,9 @@ class HeadlessRunner:
                         metadata={"raw_result": result, "synthesis_skipped": True},
                     )
                 else:
+                    synthesis_llm = (task.metadata or {}).get("synthesis_llm")
                     synthesized = await self._synthesize_with_skill(
-                        result, skill_name, task.name,
+                        result, skill_name, task.name, synthesis_llm=synthesis_llm,
                     )
                     if synthesized:
                         await self._notify_result(synthesized, task)
@@ -215,6 +216,7 @@ class HeadlessRunner:
         raw_result: dict,
         skill_name: str,
         task_name: str,
+        synthesis_llm: Optional[str] = None,
     ) -> Optional[str]:
         """
         Synthesize a raw builtin result into natural language using a skill.
@@ -237,7 +239,17 @@ class HeadlessRunner:
             )
             return None
 
-        llm = llm_registry.get_active()
+        # Use a task-specific LLM if requested (e.g. "triage" → Claude Haiku)
+        llm = None
+        if synthesis_llm:
+            from ..services.llm_router import get_llm
+            llm = get_llm(synthesis_llm)
+            if llm:
+                logger.debug("Using %s LLM for synthesis of task '%s'", synthesis_llm, task_name)
+
+        if llm is None:
+            llm = llm_registry.get_active()
+
         if llm is None:
             # Auto-activate Ollama backend for headless synthesis
             try:

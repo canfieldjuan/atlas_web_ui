@@ -219,6 +219,7 @@ class TaskScheduler:
             "metadata": {
                 "builtin_handler": "gmail_digest",
                 "synthesis_skill": "digest/email_triage",
+                "synthesis_llm": "email_triage",
                 "notify_tags": "email,inbox",
             },
         },
