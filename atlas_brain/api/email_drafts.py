@@ -18,6 +18,27 @@ logger = logging.getLogger("atlas.api.email_drafts")
 
 router = APIRouter(prefix="/email/drafts", tags=["email-drafts"])
 
+_REDRAFT_REASONS: dict[str, str] = {
+    "soften_tone": (
+        "The user found the tone too harsh or direct. "
+        "Write a warmer, more empathetic reply with softer language and a collaborative tone."
+    ),
+    "be_shorter": (
+        "The user found the draft too long. "
+        "Write a much shorter reply — aim for half the length or less. "
+        "Keep only the single most important point and a clear next step."
+    ),
+    "wrong_info": (
+        "The user believes the draft contains incorrect or outdated information. "
+        "Use the graph_context facts (verified from memory) to correct any details. "
+        "Only assert facts you can verify from the original email or graph_context."
+    ),
+}
+_REDRAFT_GUIDANCE_DEFAULT = (
+    "The user rejected the previous draft. Write a substantially different reply — "
+    "different opening, different tone or formality level, different proposed action."
+)
+
 
 def _affected_rows(result: str) -> int:
     """Parse affected row count from asyncpg execute result."""
@@ -397,8 +418,8 @@ async def generate_draft(gmail_message_id: str):
 
 
 @router.post("/{draft_id}/redraft")
-async def redraft(draft_id: UUID):
-    """Generate a new draft after rejection, with enhanced prompt for variety."""
+async def redraft(draft_id: UUID, reason: str | None = Query(default=None)):
+    """Generate a new draft after rejection, with reason-targeted guidance."""
     from ..config import settings
     from ..services.llm_router import get_llm
     from ..services.protocols import Message
@@ -439,6 +460,13 @@ async def redraft(draft_id: UUID):
             "message": "A redraft already exists for this rejected draft.",
         }
 
+    # Record why user rejected (only on first redraft per parent; reason may be None)
+    if reason:
+        await pool.execute(
+            "UPDATE email_drafts SET rejection_reason = $1 WHERE id = $2 AND rejection_reason IS NULL",
+            reason, draft_id,
+        )
+
     # Get draft LLM
     llm = get_llm("email_draft")
     if llm is None:
@@ -463,8 +491,10 @@ async def redraft(draft_id: UUID):
     parent_attempt = parent.get("attempt_number") or 1
     new_attempt = parent_attempt + 1
 
-    # Build enhanced LLM input with rejection context
-    user_input = json.dumps({
+    # Build reason-aware LLM input with rejection context
+    guidance = _REDRAFT_REASONS.get(reason or "", _REDRAFT_GUIDANCE_DEFAULT)
+
+    user_input_dict = {
         "original_from": full_msg.get("from", ""),
         "original_subject": full_msg.get("subject", ""),
         "original_body": full_msg.get("body_text", ""),
@@ -473,11 +503,20 @@ async def redraft(draft_id: UUID):
         "redraft": True,
         "attempt_number": new_attempt,
         "previous_draft_rejected": (parent["draft_body"] or "")[:500],
-        "redraft_guidance": (
-            "The user rejected the previous draft. Write a substantially different reply -- "
-            "different opening, different tone or formality level, different proposed action."
-        ),
-    }, indent=2)
+        "redraft_guidance": guidance,
+    }
+
+    # For wrong_info: inject Graphiti facts about sender
+    if reason == "wrong_info":
+        graph_facts = await _get_sender_graph_context(parent["original_from"])
+        if graph_facts:
+            user_input_dict["graph_context"] = graph_facts
+            logger.info(
+                "Injecting %d graph facts for wrong_info redraft of %s",
+                len(graph_facts), draft_id,
+            )
+
+    user_input = json.dumps(user_input_dict, indent=2)
 
     # Use slightly higher temperature for variety
     temperature = min(cfg.temperature + 0.1, 0.9)
@@ -577,12 +616,33 @@ async def skip_draft(draft_id: UUID):
     return {"draft_id": str(draft_id), "status": "skipped"}
 
 
+async def _get_sender_graph_context(sender: str) -> list[str]:
+    """Query Graphiti for known facts about the sender. Returns [] on any failure."""
+    from ..config import settings
+    try:
+        from ..memory.rag_client import get_rag_client
+        client = get_rag_client()
+        if not await client.health_check():
+            return []
+        sender_name = sender.split("<")[0].strip().strip('"') or sender
+        group_id = settings.memory.email_graph_group_id or settings.memory.group_id
+        result = await client.search(
+            query=f"facts about {sender_name}",
+            group_id=group_id,
+            max_facts=5,
+        )
+        return [s.fact for s in result.facts if s.fact]
+    except Exception as e:
+        logger.warning("Graph context lookup failed for %r: %s", sender, e)
+        return []
+
+
 async def _send_rejection_notification(
     draft_id: str,
     original_from: str,
     original_subject: str,
 ) -> None:
-    """Send ntfy notification after rejection with [Redraft] [Skip] buttons."""
+    """Send ntfy notification after rejection with feedback buttons."""
     from ..config import settings
 
     if not settings.email_draft.notify_drafts:
@@ -597,11 +657,16 @@ async def _send_rejection_notification(
 
     sender_name = original_from.split("<")[0].strip().strip('"') or original_from
 
-    message = f"Draft rejected for: {sender_name}\nSubject: {original_subject}\n\nWould you like a different draft?"
+    message = (
+        f"Draft rejected for: {sender_name}\n"
+        f"Subject: {original_subject}\n\n"
+        "How should it be fixed?"
+    )
 
     actions = (
-        f"http, Redraft, {api_url}/api/v1/email/drafts/{draft_id}/redraft, method=POST, clear=true; "
-        f"http, Skip, {api_url}/api/v1/email/drafts/{draft_id}/skip, method=POST, clear=true"
+        f"http, Soften Tone, {api_url}/api/v1/email/drafts/{draft_id}/redraft?reason=soften_tone, method=POST, clear=true; "
+        f"http, Be Shorter, {api_url}/api/v1/email/drafts/{draft_id}/redraft?reason=be_shorter, method=POST, clear=true; "
+        f"http, Wrong Info, {api_url}/api/v1/email/drafts/{draft_id}/redraft?reason=wrong_info, method=POST, clear=true"
     )
 
     headers = {
