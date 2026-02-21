@@ -229,8 +229,10 @@ async def lifespan(app: FastAPI):
             api_key=settings.llm.anthropic_api_key,
         )
 
-    # Initialize triage LLM for email replyable classification (Anthropic Haiku)
-    if settings.email_draft.enabled and settings.email_draft.triage_enabled:
+    # Initialize triage LLM for email replyable classification (Anthropic Haiku).
+    # Checked independently of email_draft.enabled so gmail_digest synthesis
+    # (synthesis_llm: "email_triage") works even when auto-draft is disabled.
+    if settings.email_draft.triage_enabled:
         from .services.llm_router import init_triage_llm
         init_triage_llm(
             model=settings.email_draft.triage_model,

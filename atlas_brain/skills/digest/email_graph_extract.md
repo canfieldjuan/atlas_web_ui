@@ -27,7 +27,7 @@ You will receive JSON with these fields:
 
 **Lines 2+**: 1-4 concise factual sentences summarizing ONLY information worth remembering long-term.
 
-If the email has NO graph-worthy content, respond with exactly: `SKIP`
+If the email has NO graph-worthy content, put `SKIP` on line 2 (after the SENTIMENT line).
 
 ### Sentiment labels
 - `positive` — good news, approvals, confirmations, offers
@@ -58,7 +58,7 @@ If the email has NO graph-worthy content, respond with exactly: `SKIP`
 
 ## Rules
 
-- Always start with `SENTIMENT: <label>` on its own line (even if the rest is SKIP)
+- Always start with `SENTIMENT: <label>` on its own line — even when the email should be SKIPped
 - Write facts in third person, past tense or present tense as appropriate
 - Include the sender's name in at least one sentence
 - Reference specific numbers, dates, and names -- never be vague

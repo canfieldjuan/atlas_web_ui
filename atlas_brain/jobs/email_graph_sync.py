@@ -249,7 +249,8 @@ class EmailGraphSync:
             body_text = (full_msg.get("body_text") or "")[:500]
             sender = full_msg.get("from", email_row.get("sender", ""))
             subject = full_msg.get("subject", email_row.get("subject", ""))
-            received_at = email_row.get("processed_at", "")
+            # Prefer the email's own date header; fall back to when Atlas processed it
+            received_at = full_msg.get("date") or email_row.get("processed_at", "")
             if hasattr(received_at, "isoformat"):
                 received_at = received_at.isoformat()
 
@@ -372,5 +373,5 @@ async def run_email_graph_sync() -> dict:
         logger.info("Email graph sync disabled in config")
         return {"status": "disabled", "_skip_synthesis": "Email graph sync disabled."}
 
-    sync = EmailGraphSync()
+    sync = EmailGraphSync(max_emails_per_run=settings.memory.email_graph_max_per_run)
     return await sync.run()

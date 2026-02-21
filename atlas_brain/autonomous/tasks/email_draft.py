@@ -6,6 +6,7 @@ generates a reply draft via the Anthropic LLM and sends an
 ntfy notification with approve/reject buttons.
 """
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -96,7 +97,8 @@ async def _triage_ambiguous_emails(
         })
 
         try:
-            result = llm.chat(
+            result = await asyncio.to_thread(
+                llm.chat,
                 messages=[
                     Message(role="system", content=system_prompt),
                     Message(role="user", content=user_input),
@@ -323,7 +325,8 @@ async def run(task: ScheduledTask) -> dict:
         ]
 
         try:
-            result = llm.chat(
+            result = await asyncio.to_thread(
+                llm.chat,
                 messages=messages,
                 max_tokens=cfg.max_tokens,
                 temperature=cfg.temperature,
@@ -343,18 +346,22 @@ async def run(task: ScheduledTask) -> dict:
             draft_subject = f"Re: {full_msg.get('subject', '')}"
 
         # Insert draft into DB
-        draft_id = await _insert_draft({
-            "gmail_message_id": msg_id,
-            "thread_id": full_msg.get("thread_id"),
-            "original_message_id": full_msg.get("message_id"),
-            "original_from": full_msg.get("from", ""),
-            "original_subject": full_msg.get("subject", ""),
-            "original_body_text": full_msg.get("body_text", ""),
-            "draft_subject": draft_subject,
-            "draft_body": draft_body,
-            "model_provider": cfg.model_provider,
-            "model_name": cfg.model_name,
-        })
+        try:
+            draft_id = await _insert_draft({
+                "gmail_message_id": msg_id,
+                "thread_id": full_msg.get("thread_id"),
+                "original_message_id": full_msg.get("message_id"),
+                "original_from": full_msg.get("from", ""),
+                "original_subject": full_msg.get("subject", ""),
+                "original_body_text": full_msg.get("body_text", ""),
+                "draft_subject": draft_subject,
+                "draft_body": draft_body,
+                "model_provider": cfg.model_provider,
+                "model_name": cfg.model_name,
+            })
+        except Exception as e:
+            logger.error("Failed to insert draft for %s: %s", msg_id, e)
+            continue
 
         # Send notification
         await _send_draft_notification(

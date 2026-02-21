@@ -145,14 +145,29 @@ def get_llm(workflow_type: Optional[str] = None) -> Optional[LLMService]:
     """
     from . import llm_registry
 
-    if workflow_type and workflow_type in TRIAGE_WORKFLOWS and _triage_llm:
-        return _triage_llm
+    if workflow_type and workflow_type in TRIAGE_WORKFLOWS:
+        if _triage_llm:
+            return _triage_llm
+        logger.warning(
+            "Triage LLM not initialized; falling back to local for workflow '%s'",
+            workflow_type,
+        )
 
-    if workflow_type and workflow_type in DRAFT_WORKFLOWS and _draft_llm:
-        return _draft_llm
+    if workflow_type and workflow_type in DRAFT_WORKFLOWS:
+        if _draft_llm:
+            return _draft_llm
+        logger.warning(
+            "Draft LLM not initialized; falling back to local for workflow '%s'",
+            workflow_type,
+        )
 
-    if workflow_type and workflow_type in CLOUD_WORKFLOWS and _cloud_llm:
-        return _cloud_llm
+    if workflow_type and workflow_type in CLOUD_WORKFLOWS:
+        if _cloud_llm:
+            return _cloud_llm
+        logger.warning(
+            "Cloud LLM not initialized; falling back to local for workflow '%s'",
+            workflow_type,
+        )
 
     # Default: local from registry
     return llm_registry.get_active()

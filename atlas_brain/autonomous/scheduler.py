@@ -364,14 +364,20 @@ class TaskScheduler:
                         merged = {**existing_meta, **new_keys}
                         from ..storage.database import get_db_pool
                         pool = get_db_pool()
-                        await pool.execute(
-                            "UPDATE scheduled_tasks SET metadata = $1 WHERE id = $2",
-                            merged, existing.id,
-                        )
-                        logger.info(
-                            "Merged new metadata keys into task '%s': %s",
-                            task_def["name"], list(new_keys),
-                        )
+                        if not pool.is_initialized:
+                            logger.warning(
+                                "DB not available; skipping metadata merge for task '%s'",
+                                task_def["name"],
+                            )
+                        else:
+                            await pool.execute(
+                                "UPDATE scheduled_tasks SET metadata = $1 WHERE id = $2",
+                                merged, existing.id,
+                            )
+                            logger.info(
+                                "Merged new metadata keys into task '%s': %s",
+                                task_def["name"], list(new_keys),
+                            )
                     continue
 
                 task = await repo.create(

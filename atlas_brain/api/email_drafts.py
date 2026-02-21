@@ -5,6 +5,7 @@ Provides list, view, approve, reject, edit, generate, redraft, and skip
 operations for LLM-generated email reply drafts.
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -337,7 +338,8 @@ async def generate_draft(gmail_message_id: str):
     }, indent=2)
 
     try:
-        result = llm.chat(
+        result = await asyncio.to_thread(
+            llm.chat,
             messages=[
                 Message(role="system", content=system_prompt),
                 Message(role="user", content=user_input),
@@ -481,7 +483,8 @@ async def redraft(draft_id: UUID):
     temperature = min(cfg.temperature + 0.1, 0.9)
 
     try:
-        result = llm.chat(
+        result = await asyncio.to_thread(
+            llm.chat,
             messages=[
                 Message(role="system", content=system_prompt),
                 Message(role="user", content=user_input),
@@ -560,6 +563,16 @@ async def redraft(draft_id: UUID):
 @router.post("/{draft_id}/skip")
 async def skip_draft(draft_id: UUID):
     """Acknowledge 'don't redraft' -- clears the ntfy notification."""
+    from ..storage.database import get_db_pool
+
+    pool = get_db_pool()
+    if pool.is_initialized:
+        row = await pool.fetchrow(
+            "SELECT id FROM email_drafts WHERE id = $1", draft_id,
+        )
+        if not row:
+            raise HTTPException(404, "Draft not found")
+
     logger.info("Draft %s skipped (no redraft)", draft_id)
     return {"draft_id": str(draft_id), "status": "skipped"}
 

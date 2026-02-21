@@ -43,7 +43,7 @@ LOW PRIORITY
 - Each email line: [category] Sender -- key info
 - Collapse multiple emails from same sender: "Cash App (4) -- ..." with all key details on one line
 - Use the `category` field as the [tag] — do not invent new ones
-- group_id priority: action_required → ACTION REQUIRED, fyi → FYI, low_priority → LOW PRIORITY
+- Priority mapping: action_required → ACTION REQUIRED, fyi → FYI, low_priority → LOW PRIORITY
 - Skip empty sections entirely
 - Extract key details: amounts, dates, confirmation numbers
 - Keep under 300 words
