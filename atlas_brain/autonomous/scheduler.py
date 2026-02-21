@@ -206,6 +206,7 @@ class TaskScheduler:
             "metadata": {
                 "builtin_handler": "morning_briefing",
                 "synthesis_skill": "digest/morning_briefing",
+                "synthesis_llm": "email_triage",
                 "calendar_hours": 12,
                 "security_hours": 8,
             },
