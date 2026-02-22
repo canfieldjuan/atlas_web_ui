@@ -243,10 +243,45 @@ class IMAPEmailProvider:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
 
-    def _list_messages_sync(self, query: str, max_results: int) -> list[dict[str, Any]]:
+    def _list_folders_sync(self) -> list[dict[str, Any]]:
+        """List all IMAP folders/mailboxes (blocking)."""
         conn = self._connect()
         try:
-            conn.select(f'"{self._mailbox}"', readonly=True)
+            status, data = conn.list()
+            if status != "OK" or not data:
+                return []
+            folders: list[dict[str, Any]] = []
+            for item in data:
+                if item is None:
+                    continue
+                raw = item.decode() if isinstance(item, bytes) else str(item)
+                # IMAP LIST format: (\\Flags) "delimiter" "name"
+                match = re.match(
+                    r'\(([^)]*)\)\s+"([^"]+)"\s+"?([^"]+)"?', raw
+                )
+                if match:
+                    flags_str, delimiter, name = match.groups()
+                    flags = [f.strip() for f in flags_str.split() if f.strip()]
+                    folders.append({
+                        "name": name,
+                        "delimiter": delimiter,
+                        "flags": flags,
+                        "selectable": "\\Noselect" not in flags,
+                    })
+            return folders
+        finally:
+            try:
+                conn.logout()
+            except Exception:
+                pass
+
+    def _list_messages_sync(
+        self, query: str, max_results: int, mailbox: str | None = None,
+    ) -> list[dict[str, Any]]:
+        conn = self._connect()
+        target = mailbox or self._mailbox
+        try:
+            conn.select(f'"{target}"', readonly=True)
             criteria = _imap_search_criteria(query)
             status, data = conn.uid("search", None, criteria)  # type: ignore[arg-type]
             if status != "OK" or not data or not data[0]:
@@ -279,10 +314,11 @@ class IMAPEmailProvider:
             except Exception:
                 pass
 
-    def _get_message_sync(self, uid: str) -> dict[str, Any]:
+    def _get_message_sync(self, uid: str, mailbox: str | None = None) -> dict[str, Any]:
         conn = self._connect()
+        target = mailbox or self._mailbox
         try:
-            conn.select(f'"{self._mailbox}"', readonly=True)
+            conn.select(f'"{target}"', readonly=True)
             status, data = conn.uid("fetch", uid, "(RFC822)")  # type: ignore[arg-type]
             if status != "OK" or not data or not data[0]:
                 return {"error": f"Message {uid} not found"}
@@ -299,10 +335,11 @@ class IMAPEmailProvider:
             except Exception:
                 pass
 
-    def _get_message_metadata_sync(self, uid: str) -> dict[str, Any]:
+    def _get_message_metadata_sync(self, uid: str, mailbox: str | None = None) -> dict[str, Any]:
         conn = self._connect()
+        target = mailbox or self._mailbox
         try:
-            conn.select(f'"{self._mailbox}"', readonly=True)
+            conn.select(f'"{target}"', readonly=True)
             status, data = conn.uid("fetch", uid, "(RFC822.HEADER)")  # type: ignore[arg-type]
             if status != "OK" or not data or not data[0]:
                 return {"error": f"Message {uid} not found"}
@@ -316,7 +353,7 @@ class IMAPEmailProvider:
             except Exception:
                 pass
 
-    def _get_thread_sync(self, thread_id: str) -> dict[str, Any]:
+    def _get_thread_sync(self, thread_id: str, mailbox: str | None = None) -> dict[str, Any]:
         """
         Fetch all messages in a thread.
 
@@ -325,8 +362,9 @@ class IMAPEmailProvider:
         thread_id as a message UID seed.
         """
         conn = self._connect()
+        target = mailbox or self._mailbox
         try:
-            conn.select(f'"{self._mailbox}"', readonly=True)
+            conn.select(f'"{target}"', readonly=True)
 
             # Try Gmail's X-GM-THRID search first
             if re.match(r"^\d+$", thread_id):
@@ -368,19 +406,24 @@ class IMAPEmailProvider:
     # Public async interface
     # -----------------------------------------------------------------------
 
+    async def list_folders(self) -> list[dict[str, Any]]:
+        """List all IMAP folders/mailboxes."""
+        return await self._run(self._list_folders_sync)
+
     async def list_messages(
-        self, query: str = "is:unread", max_results: int = 20
+        self, query: str = "is:unread", max_results: int = 20,
+        mailbox: str | None = None,
     ) -> list[dict[str, Any]]:
-        return await self._run(self._list_messages_sync, query, min(max_results, 200))
+        return await self._run(self._list_messages_sync, query, min(max_results, 200), mailbox)
 
-    async def get_message(self, message_id: str) -> dict[str, Any]:
-        return await self._run(self._get_message_sync, message_id)
+    async def get_message(self, message_id: str, mailbox: str | None = None) -> dict[str, Any]:
+        return await self._run(self._get_message_sync, message_id, mailbox)
 
-    async def get_message_metadata(self, message_id: str) -> dict[str, Any]:
-        return await self._run(self._get_message_metadata_sync, message_id)
+    async def get_message_metadata(self, message_id: str, mailbox: str | None = None) -> dict[str, Any]:
+        return await self._run(self._get_message_metadata_sync, message_id, mailbox)
 
-    async def get_thread(self, thread_id: str) -> dict[str, Any]:
-        return await self._run(self._get_thread_sync, thread_id)
+    async def get_thread(self, thread_id: str, mailbox: str | None = None) -> dict[str, Any]:
+        return await self._run(self._get_thread_sync, thread_id, mailbox)
 
     # IMAP is read-only in this provider — send is not supported
     async def send(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
@@ -454,20 +497,20 @@ class GmailEmailProvider:
         return await _get_gmail_client()
 
     async def list_messages(
-        self, query: str = "is:unread", max_results: int = 20
+        self, query: str = "is:unread", max_results: int = 20, **kwargs: Any,
     ) -> list[dict[str, Any]]:
         client = await self._client()
         return await client.list_messages(query=query, max_results=max_results)
 
-    async def get_message(self, message_id: str) -> dict[str, Any]:
+    async def get_message(self, message_id: str, **kwargs: Any) -> dict[str, Any]:
         client = await self._client()
         return await client.get_message_full(message_id)
 
-    async def get_message_metadata(self, message_id: str) -> dict[str, Any]:
+    async def get_message_metadata(self, message_id: str, **kwargs: Any) -> dict[str, Any]:
         client = await self._client()
         return await client.get_message_metadata(message_id)
 
-    async def get_thread(self, thread_id: str) -> dict[str, Any]:
+    async def get_thread(self, thread_id: str, **kwargs: Any) -> dict[str, Any]:
         """Return a Gmail thread with message list (metadata format)."""
         from ..autonomous.tasks.gmail_digest import GMAIL_API_BASE
 
@@ -622,19 +665,26 @@ class CompositeEmailProvider:
                 return await getattr(self._gmail, method)(*args, **kwargs)
             raise
 
+    async def list_folders(self) -> list[dict[str, Any]]:
+        """List IMAP folders. Only works when IMAP is configured."""
+        if self._imap.is_configured():
+            return await self._imap.list_folders()
+        return [{"name": "INBOX", "delimiter": "/", "flags": [], "selectable": True}]
+
     async def list_messages(
-        self, query: str = "is:unread", max_results: int = 20
+        self, query: str = "is:unread", max_results: int = 20,
+        mailbox: str | None = None,
     ) -> list[dict[str, Any]]:
-        return await self._read_with_fallback("list_messages", query=query, max_results=max_results)
+        return await self._read_with_fallback("list_messages", query=query, max_results=max_results, mailbox=mailbox)
 
-    async def get_message(self, message_id: str) -> dict[str, Any]:
-        return await self._read_with_fallback("get_message", message_id)
+    async def get_message(self, message_id: str, mailbox: str | None = None) -> dict[str, Any]:
+        return await self._read_with_fallback("get_message", message_id, mailbox=mailbox)
 
-    async def get_message_metadata(self, message_id: str) -> dict[str, Any]:
-        return await self._read_with_fallback("get_message_metadata", message_id)
+    async def get_message_metadata(self, message_id: str, mailbox: str | None = None) -> dict[str, Any]:
+        return await self._read_with_fallback("get_message_metadata", message_id, mailbox=mailbox)
 
-    async def get_thread(self, thread_id: str) -> dict[str, Any]:
-        return await self._read_with_fallback("get_thread", thread_id)
+    async def get_thread(self, thread_id: str, mailbox: str | None = None) -> dict[str, Any]:
+        return await self._read_with_fallback("get_thread", thread_id, mailbox=mailbox)
 
 
 # ---------------------------------------------------------------------------

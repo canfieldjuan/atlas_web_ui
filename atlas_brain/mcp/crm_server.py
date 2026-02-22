@@ -29,11 +29,23 @@ Run:
 import json
 import logging
 import sys
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger("atlas.mcp.crm")
+
+
+@asynccontextmanager
+async def _lifespan(server):
+    """Initialize DB pool on startup, close on shutdown."""
+    from ..storage.database import init_database, close_database
+    await init_database()
+    logger.info("CRM MCP: DB pool initialized")
+    yield
+    await close_database()
+
 
 mcp = FastMCP(
     "atlas-crm",
@@ -44,6 +56,7 @@ mcp = FastMCP(
         "Log every customer interaction (calls, emails, appointments) via "
         "log_interaction to build a complete customer history over time."
     ),
+    lifespan=_lifespan,
 )
 
 

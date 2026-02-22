@@ -37,11 +37,23 @@ Configuration (env vars — all prefixed ATLAS_COMMS_):
 import json
 import logging
 import sys
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger("atlas.mcp.twilio")
+
+
+@asynccontextmanager
+async def _lifespan(server):
+    """Initialize DB pool on startup, close on shutdown."""
+    from ..storage.database import init_database, close_database
+    await init_database()
+    logger.info("Twilio MCP: DB pool initialized")
+    yield
+    await close_database()
+
 
 mcp = FastMCP(
     "atlas-twilio",
@@ -52,6 +64,7 @@ mcp = FastMCP(
         "or start_recording(call_sid) to begin recording on an already-active call. "
         "Always confirm phone numbers are in E.164 format (+1XXXXXXXXXX) before calling."
     ),
+    lifespan=_lifespan,
 )
 
 

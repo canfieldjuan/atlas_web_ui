@@ -183,6 +183,38 @@ class CallTranscriptRepository:
         except Exception as e:
             raise DatabaseOperationError("link contact", e)
 
+    async def update_plan_status(
+        self,
+        transcript_id: UUID,
+        status: str,
+        results: list[dict] | None = None,
+    ) -> None:
+        """Update plan_status, plan_decided_at, and optionally plan_results."""
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            raise DatabaseUnavailableError("update plan status")
+
+        try:
+            if results is not None:
+                await pool.execute(
+                    """UPDATE call_transcripts
+                       SET plan_status = $1, plan_decided_at = NOW(),
+                           plan_results = $2::jsonb
+                       WHERE id = $3""",
+                    status, json.dumps(results), transcript_id,
+                )
+            else:
+                await pool.execute(
+                    """UPDATE call_transcripts
+                       SET plan_status = $1, plan_decided_at = NOW()
+                       WHERE id = $2""",
+                    status, transcript_id,
+                )
+        except DatabaseUnavailableError:
+            raise
+        except Exception as e:
+            raise DatabaseOperationError("update plan status", e)
+
     async def mark_notified(self, transcript_id: UUID) -> None:
         """Mark transcript as notified."""
         pool = get_db_pool()
@@ -373,14 +405,15 @@ class CallTranscriptRepository:
                     result[key] = json.loads(val)
                 except (json.JSONDecodeError, TypeError):
                     result[key] = {}
-        val = result.get("proposed_actions")
-        if val is None:
-            result["proposed_actions"] = []
-        elif isinstance(val, str):
-            try:
-                result["proposed_actions"] = json.loads(val)
-            except (json.JSONDecodeError, TypeError):
-                result["proposed_actions"] = []
+        for list_key in ("proposed_actions", "plan_results"):
+            val = result.get(list_key)
+            if val is None:
+                result[list_key] = []
+            elif isinstance(val, str):
+                try:
+                    result[list_key] = json.loads(val)
+                except (json.JSONDecodeError, TypeError):
+                    result[list_key] = []
         return result
 
 

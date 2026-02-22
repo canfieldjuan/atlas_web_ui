@@ -30,12 +30,24 @@ Run:
 import json
 import logging
 import sys
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger("atlas.mcp.calendar")
+
+
+@asynccontextmanager
+async def _lifespan(server):
+    """Initialize DB pool on startup, close on shutdown."""
+    from ..storage.database import init_database, close_database
+    await init_database()
+    logger.info("Calendar MCP: DB pool initialized")
+    yield
+    await close_database()
+
 
 mcp = FastMCP(
     "atlas-calendar",
@@ -47,6 +59,7 @@ mcp = FastMCP(
         "Use sync_appointment to keep local DB appointments in sync with the calendar "
         "after creating or updating them via the CRM / scheduling tools."
     ),
+    lifespan=_lifespan,
 )
 
 

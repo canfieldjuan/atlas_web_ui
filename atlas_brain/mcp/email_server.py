@@ -5,16 +5,18 @@ Provider-agnostic MCP server for email operations.
 
 Sending:  CompositeEmailProvider — Gmail preferred, Resend fallback, or any
           provider registered via get_email_provider().
-Reading:  Whichever provider supports it (currently Gmail).
+Reading:  IMAP preferred (provider-agnostic: Gmail, Outlook, Yahoo, any server).
+          Falls back to Gmail API when IMAP is not configured.
 History:  Atlas sent_emails DB table (all outbound email sent through Atlas).
 
 Tools:
     send_email          — send a plain email
     send_estimate       — send a cleaning estimate confirmation (templated)
     send_proposal       — send a cleaning proposal (templated, auto-PDF)
-    list_inbox          — list inbox messages
+    list_folders        — list all IMAP folders / mailboxes
+    list_inbox          — list messages in a folder (default: INBOX)
     get_message         — fetch a full message with body
-    search_inbox        — search inbox with arbitrary query syntax
+    search_inbox        — search messages with arbitrary query syntax
     get_thread          — fetch a thread
     list_sent_history   — query Atlas sent_emails history from the DB
 
@@ -26,23 +28,38 @@ Run:
 import json
 import logging
 import sys
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
 logger = logging.getLogger("atlas.mcp.email")
 
+
+@asynccontextmanager
+async def _lifespan(server):
+    """Initialize DB pool on startup, close on shutdown."""
+    from ..storage.database import init_database, close_database
+    await init_database()
+    logger.info("Email MCP: DB pool initialized")
+    yield
+    await close_database()
+
+
 mcp = FastMCP(
     "atlas-email",
     instructions=(
         "Email MCP server for Atlas. "
         "Handles sending (provider-agnostic: Gmail preferred / Resend fallback) "
-        "and reading (whichever provider supports it). "
+        "and reading via IMAP (works with any mail server). "
+        "Use list_folders to discover available mailboxes (INBOX, Sent, Drafts, etc.). "
+        "Pass a folder name to list_inbox or search_inbox to read from that folder. "
         "For business emails (estimates, proposals) use the specialized tools. "
         "For generic messages use send_email. "
         "Always summarise the email content and confirm with the user before "
         "sending unless explicitly told to auto-send."
     ),
+    lifespan=_lifespan,
 )
 
 
@@ -271,6 +288,31 @@ async def send_proposal(
 
 
 # ---------------------------------------------------------------------------
+# Tool: list_folders
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def list_folders() -> str:
+    """
+    List all IMAP folders / mailboxes available on the mail server.
+
+    Returns folder names, flags, and whether each folder is selectable.
+    Use the folder 'name' as the mailbox parameter in list_inbox, search_inbox,
+    get_message, and get_thread to read from that specific folder.
+
+    Common folders: INBOX, [Gmail]/Sent Mail, [Gmail]/Drafts, [Gmail]/Spam,
+    [Gmail]/Trash, [Gmail]/All Mail, [Gmail]/Starred.
+    Folder names vary by provider (Outlook uses 'Sent Items', etc.).
+    """
+    try:
+        folders = await _provider().list_folders()
+        return json.dumps({"folders": folders, "count": len(folders)}, default=str)
+    except Exception as exc:
+        logger.exception("list_folders error")
+        return json.dumps({"error": str(exc), "folders": []})
+
+
+# ---------------------------------------------------------------------------
 # Tool: list_inbox
 # ---------------------------------------------------------------------------
 
@@ -278,20 +320,28 @@ async def send_proposal(
 async def list_inbox(
     query: str = "is:unread",
     max_results: int = 20,
+    mailbox: Optional[str] = None,
 ) -> str:
     """
-    List inbox messages matching a search query.
+    List messages in a mailbox matching a search query.
 
-    query: provider search syntax (default 'is:unread'). Gmail examples:
-        'is:unread newer_than:1d'
-        'from:john@example.com'
-        'subject:invoice has:attachment'
-        'label:important'
+    query: search syntax (default 'is:unread'). Supported filters:
+        'is:unread'              — unread messages
+        'is:read'                — read messages
+        'from:john@example.com'  — from a specific sender
+        'to:alice@example.com'   — to a specific recipient
+        'subject:invoice'        — subject contains text
+        'newer_than:7d'          — last 7 days
+        'older_than:30d'         — older than 30 days
+        'is:starred'             — starred / flagged messages
     max_results: capped at 100
+    mailbox: IMAP folder to read from (default: INBOX).
+             Use list_folders to discover available folders.
+             Examples: 'INBOX', '[Gmail]/Sent Mail', '[Gmail]/All Mail'
     """
     try:
         messages = await _provider().list_messages(
-            query=query, max_results=min(max_results, 100)
+            query=query, max_results=min(max_results, 100), mailbox=mailbox,
         )
         return json.dumps({"messages": messages, "count": len(messages)}, default=str)
     except Exception as exc:
@@ -304,14 +354,17 @@ async def list_inbox(
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def get_message(message_id: str) -> str:
+async def get_message(message_id: str, mailbox: Optional[str] = None) -> str:
     """
     Fetch a message with its full body content.
+
+    message_id: Message UID (from list_inbox or search_inbox).
+    mailbox: IMAP folder the message lives in (default: INBOX).
 
     Returns from, subject, date, snippet, body_text, label_ids, thread_id.
     """
     try:
-        msg = await _provider().get_message(message_id)
+        msg = await _provider().get_message(message_id, mailbox=mailbox)
         return json.dumps({"message": msg}, default=str)
     except Exception as exc:
         logger.exception("get_message error")
@@ -323,26 +376,30 @@ async def get_message(message_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def search_inbox(query: str, max_results: int = 20) -> str:
+async def search_inbox(
+    query: str,
+    max_results: int = 20,
+    mailbox: Optional[str] = None,
+) -> str:
     """
-    Search inbox and return messages with metadata.
+    Search messages in a mailbox and return results with metadata.
 
-    Uses provider search syntax (Gmail examples):
-        from:alice@example.com
-        subject:"invoice" newer_than:7d
-        is:unread has:attachment
+    query: search syntax (see list_inbox for supported filters).
+    max_results: capped at 100.
+    mailbox: IMAP folder to search (default: INBOX).
+             Use list_folders to discover available folders.
 
     Returns up to max_results message stubs; fetches metadata for the first 10.
     """
     try:
         provider = _provider()
         message_stubs = await provider.list_messages(
-            query=query, max_results=min(max_results, 100)
+            query=query, max_results=min(max_results, 100), mailbox=mailbox,
         )
         enriched: list[dict] = []
         for stub in message_stubs[:10]:
             try:
-                meta = await provider.get_message_metadata(stub["id"])
+                meta = await provider.get_message_metadata(stub["id"], mailbox=mailbox)
                 enriched.append(meta)
             except Exception:
                 enriched.append(stub)
@@ -359,14 +416,17 @@ async def search_inbox(query: str, max_results: int = 20) -> str:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def get_thread(thread_id: str) -> str:
+async def get_thread(thread_id: str, mailbox: Optional[str] = None) -> str:
     """
     Fetch a thread with all of its messages (metadata format).
+
+    thread_id: Thread ID (from list_inbox or search_inbox results).
+    mailbox: IMAP folder to search in (default: INBOX).
 
     Useful for reading an entire conversation chain in one call.
     """
     try:
-        thread = await _provider().get_thread(thread_id)
+        thread = await _provider().get_thread(thread_id, mailbox=mailbox)
         return json.dumps({"thread": thread}, default=str)
     except Exception as exc:
         logger.exception("get_thread error")

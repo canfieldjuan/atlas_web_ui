@@ -543,6 +543,18 @@ async def approve_plan(transcript_id: UUID):
     when complete.
     """
     record = await _get_transcript_or_404(transcript_id)
+
+    # Idempotency: skip if already approved/executed
+    plan_status = record.get("plan_status", "pending")
+    if plan_status in ("approved", "executed"):
+        return JSONResponse({
+            "status": "ok",
+            "message": "Plan already executed",
+            "results": record.get("plan_results") or [],
+        })
+    if plan_status == "rejected":
+        return JSONResponse({"status": "ok", "message": "Plan already rejected"})
+
     actions = record.get("proposed_actions") or []
     data = record.get("extracted_data") or {}
     biz_name = _get_business_name(record)
@@ -579,6 +591,13 @@ async def approve_plan(transcript_id: UUID):
         except Exception as e:
             logger.warning("Failed to log plan approval interaction: %s", e)
 
+    # Persist plan status + results
+    try:
+        repo = get_call_transcript_repo()
+        await repo.update_plan_status(transcript_id, "executed", results)
+    except Exception as e:
+        logger.error("Failed to persist plan status for %s: %s", transcript_id, e)
+
     # Send completion notification
     try:
         await _notify_plan_executed(transcript_id, results, biz_name, data)
@@ -608,6 +627,13 @@ async def reject_plan(transcript_id: UUID):
     """Mark the action plan as rejected."""
     record = await _get_transcript_or_404(transcript_id)
 
+    # Idempotency: skip if already decided
+    plan_status = record.get("plan_status", "pending")
+    if plan_status == "rejected":
+        return JSONResponse({"status": "ok", "message": "Plan already rejected"})
+    if plan_status in ("approved", "executed"):
+        return JSONResponse({"status": "ok", "message": "Plan already executed, cannot reject"})
+
     contact_id = record.get("contact_id")
     if contact_id:
         try:
@@ -619,6 +645,13 @@ async def reject_plan(transcript_id: UUID):
             )
         except Exception as e:
             logger.warning("Failed to log plan rejection: %s", e)
+
+    # Persist plan status
+    try:
+        repo = get_call_transcript_repo()
+        await repo.update_plan_status(transcript_id, "rejected")
+    except Exception as e:
+        logger.error("Failed to persist plan rejection for %s: %s", transcript_id, e)
 
     logger.info("Action plan rejected for transcript %s", transcript_id)
     return JSONResponse({"status": "ok", "message": "Plan rejected"})
