@@ -42,6 +42,9 @@ class MemoryContext:
     # Conversation history (from PostgreSQL)
     conversation_history: list[dict] = field(default_factory=list)
 
+    # Recent entity context across all turn types (from PostgreSQL)
+    recent_entities: list[dict] = field(default_factory=list)
+
     # Physical context (from ContextAggregator)
     current_time: str = ""
     current_room: Optional[str] = None
@@ -134,6 +137,15 @@ class MemoryService:
                 context.conversation_history = history
             except Exception as e:
                 logger.warning("Failed to load session history: %s", e)
+
+        # Load recent entity context from last N turns (any type)
+        if include_history and session_id:
+            try:
+                context.recent_entities = await self._load_recent_entities(
+                    session_id, limit=3
+                )
+            except Exception as e:
+                logger.debug("Recent entities load failed: %s", e)
 
         # Load physical context from ContextAggregator
         if include_physical:
@@ -228,6 +240,35 @@ class MemoryService:
             ]
         except Exception as e:
             logger.warning("Failed to load history: %s", e)
+            return []
+
+    async def _load_recent_entities(self, session_id: str, limit: int = 3) -> list[dict]:
+        """
+        Load the last `limit` turns of ANY type and return their stored entities.
+
+        Queries both conversation and command turns so device context is included.
+        Returns a flat list of entity dicts for format_entity_context().
+        """
+        from ..storage.database import get_db_pool
+        from ..storage.repositories.conversation import get_conversation_repo
+
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            return []
+
+        try:
+            conv_repo = get_conversation_repo()
+            session_uuid = UUID(session_id)
+            # turn_type=None -> all types (conversation + command)
+            turns = await conv_repo.get_history(session_uuid, limit=limit, turn_type=None)
+            entities = []
+            for t in turns:
+                for e in (t.metadata or {}).get("entities", []):
+                    if e.get("name"):
+                        entities.append(e)
+            return entities
+        except Exception as e:
+            logger.warning("Failed to load recent entities: %s", e)
             return []
 
     async def _load_user_profile(self, user_id: str):

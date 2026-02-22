@@ -1283,6 +1283,52 @@ class AtlasAgentGraph:
             except Exception as e:
                 logger.debug("Quality detection skipped: %s", e)
 
+            # Entity extraction from intent and state
+            entities = []
+            intent_obj = state.get("intent")
+            action_type = state.get("action_type", "")
+            _speaker = state.get("speaker_id")
+
+            if intent_obj:
+                if turn_type == "command" and (intent_obj.target_type or intent_obj.target_name):
+                    device_name = " ".join(
+                        filter(None, [intent_obj.target_name, intent_obj.target_type])
+                    ).strip()
+                    if device_name:
+                        entities.append({
+                            "type": "device",
+                            "name": device_name,
+                            "action": intent_obj.action or "",
+                            "source": "command",
+                        })
+                elif action_type == "tool_use" and intent_obj.target_name:
+                    entities.append({
+                        "type": "topic",
+                        "name": intent_obj.target_name,
+                        "action": intent_obj.action or "",
+                        "source": "tool",
+                    })
+
+            # Location from response text
+            response_text = state.get("response", "") or ""
+            if response_text:
+                try:
+                    from ...voice.entity_context import extract_location_from_text
+                    location = extract_location_from_text(response_text)
+                    if location:
+                        entities.append({"type": "location", "name": location, "source": "text"})
+                except Exception:
+                    pass
+
+            # Person entity from speaker
+            if _speaker:
+                entities.append({"type": "person", "name": _speaker, "source": "speaker"})
+
+            if entities:
+                if assistant_metadata is None:
+                    assistant_metadata = {}
+                assistant_metadata.setdefault("entities", []).extend(entities)
+
             # Store user turn
             runtime_ctx = state.get("runtime_context", {})
             await self._memory.add_turn(

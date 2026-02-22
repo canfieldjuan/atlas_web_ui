@@ -419,6 +419,17 @@ async def _stream_llm_response(
         if rag_facts:
             prompt_parts.append("\nRelevant memory:\n" + "\n".join(f"- {f}" for f in rag_facts))
 
+    # Inject entity context from recent turns (devices, people, locations, topics)
+    if mem_ctx.recent_entities:
+        try:
+            from .entity_context import collect_recent_entities, format_entity_context
+            refs = collect_recent_entities(mem_ctx.recent_entities)
+            entity_str = format_entity_context(refs)
+            if entity_str:
+                prompt_parts.append(f"\n{entity_str}")
+        except Exception as e:
+            logger.debug("Entity context injection failed: %s", e)
+
     messages = [Message(role="system", content=" ".join(prompt_parts))]
 
     # History from MemoryContext as separate messages (already chronological order)
@@ -521,6 +532,13 @@ async def _persist_streaming_turns(
                     logger.debug("Correction feedback failed: %s", e)
     except Exception as e:
         logger.debug("Quality detection skipped in streaming: %s", e)
+
+    # Store entity context: person entity from speaker
+    if speaker_name:
+        person_entity = {"type": "person", "name": speaker_name, "source": "speaker"}
+        if assistant_metadata is None:
+            assistant_metadata = {}
+        assistant_metadata.setdefault("entities", []).append(person_entity)
 
     try:
         svc = get_memory_service()
