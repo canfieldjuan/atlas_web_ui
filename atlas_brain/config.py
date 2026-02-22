@@ -143,6 +143,30 @@ class LLMConfig(BaseSettings):
         description="Ollama cloud model for business workflows (e.g., minimax-m2:cloud)",
     )
 
+    # Automatic day/night model swap (single 24GB GPU)
+    model_swap_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable automatic Ollama model swapping. "
+            "At midnight: unloads day_model to free VRAM for graphiti-wrapper. "
+            "At 7:30 AM: unloads night_model, pre-warms day_model for the day."
+        ),
+    )
+    day_model: str = Field(
+        default="qwen3:14b",
+        description=(
+            "Ollama model used during day hours. "
+            "Should match ollama_model. Pre-warmed at 7:30 AM."
+        ),
+    )
+    night_model: str = Field(
+        default="qwen3:32b",
+        description=(
+            "Ollama model used by graphiti-wrapper at night for email graph extraction. "
+            "Unloaded from VRAM at midnight; graphiti-wrapper loads it on demand at 6 AM."
+        ),
+    )
+
 
 class TTSConfig(BaseSettings):
     """TTS configuration."""
@@ -1576,6 +1600,12 @@ class AutonomousConfig(BaseSettings):
     notify_priority: str = Field(
         default="default",
         description="Default ntfy priority for autonomous task notifications",
+    )
+
+    # TTS broadcast for task results
+    announce_results: bool = Field(
+        default=False,
+        description="Broadcast synthesized task results to edge nodes via TTS",
     )
 
     # --- Task-specific defaults (overridable per-task via task.metadata) ---

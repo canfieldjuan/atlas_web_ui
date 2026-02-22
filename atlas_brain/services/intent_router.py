@@ -161,12 +161,23 @@ ROUTE_DEFINITIONS: dict[str, list[str]] = {
         "start recording on the driveway camera",
         "stop recording on the backyard camera",
         "what are the cameras seeing right now",
-        "is anybody at the front door camera",
-        "check if someone is on the security camera",
-        "any motion on the cameras", "check for motion activity",
         "show me the security zones", "list all security zones",
         "arm the home security", "disarm the home security",
         "activate the security system", "deactivate the security system",
+    ],
+    "detection_query": [
+        "who was at the front door", "who is at the back door",
+        "is anyone outside", "any motion on the cameras",
+        "what did the cameras see", "who came by today",
+        "was there anyone at the driveway", "any people detected recently",
+        "check the front door", "is anybody at the front door camera",
+        "check if someone is on the security camera", "check for motion activity",
+    ],
+    "digest": [
+        "give me my morning briefing", "morning briefing",
+        "daily summary", "security summary", "email digest",
+        "how are my devices", "device status", "catch me up",
+        "what did I miss", "give me a rundown",
     ],
     "presence": [
         "set it to movie mode", "movie time", "cinema mode",
@@ -221,9 +232,11 @@ ROUTE_TO_ACTION: dict[str, tuple[str, Optional[str]]] = {
     "who_is_here":   ("tool_use", "who_is_here"),
     "notification":  ("tool_use", "send_notification"),
     "show_camera":   ("tool_use", "show_camera_feed"),
-    "security":      ("device_command", None),
-    "presence":      ("device_command", None),
-    "conversation":   ("conversation", None),
+    "security":         ("device_command", None),
+    "presence":         ("device_command", None),
+    "detection_query":  ("tool_use", "get_person_at_location"),
+    "digest":           ("tool_use", "run_digest"),
+    "conversation":     ("conversation", None),
 }
 
 # Routes that trigger multi-turn workflows
@@ -556,6 +569,8 @@ class SemanticIntentRouter:
                 "- notification: send a push notification\n"
                 "- show_camera: show a camera feed\n"
                 "- security/presence: arm security or check presence sensors\n"
+                "- detection_query: ask who was at a door/camera, check for motion or people\n"
+                "- digest: request a briefing, summary, or status report\n"
                 "- conversation: general chat, personal questions, opinions, "
                 "knowledge recall, or anything not matching above\n"
                 f'User query: "{query}"\n'

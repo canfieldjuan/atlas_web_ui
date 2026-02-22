@@ -179,6 +179,36 @@ def get_all_connections() -> dict[str, EdgeConnection]:
     return _connections.copy()
 
 
+async def broadcast_tts_announce(
+    text: str,
+    priority: str = "default",
+    exclude: str | None = None,
+) -> int:
+    """Broadcast a TTS announcement to all connected edge devices.
+
+    Args:
+        text: The text to be spoken via TTS on edge nodes.
+        priority: Priority level for the announcement.
+        exclude: Optional location_id to skip (e.g., originator already notified).
+
+    Returns:
+        Number of edge nodes notified.
+    """
+    msg = {"type": "tts_announce", "text": text, "priority": priority}
+    count = 0
+    for loc_id, conn in get_all_connections().items():
+        if exclude and loc_id == exclude:
+            continue
+        try:
+            await conn.send(msg)
+            count += 1
+        except Exception as e:
+            logger.warning("Failed to send tts_announce to %s: %s", loc_id, e)
+    if count:
+        logger.info("Broadcast tts_announce to %d edge(s) (priority=%s)", count, priority)
+    return count
+
+
 @router.websocket("/{location_id}")
 async def edge_websocket(
     websocket: WebSocket,

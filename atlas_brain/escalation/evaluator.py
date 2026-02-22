@@ -239,3 +239,15 @@ class EscalationEvaluator:
             )
         except Exception:
             logger.exception("Failed to send escalation_alert to edge")
+
+        # Broadcast TTS to ALL other connected edges
+        try:
+            from ..api.edge.websocket import broadcast_tts_announce
+
+            await broadcast_tts_announce(
+                text,
+                priority=result.priority,
+                exclude=connection.location_id,
+            )
+        except Exception:
+            logger.warning("Failed to broadcast escalation TTS to other edges", exc_info=True)

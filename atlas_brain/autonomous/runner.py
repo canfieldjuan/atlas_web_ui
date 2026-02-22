@@ -211,6 +211,21 @@ class HeadlessRunner:
         except Exception:
             logger.warning("Failed to send notification for task '%s'", task.name, exc_info=True)
 
+        # Optionally broadcast via TTS to edge nodes
+        if (
+            autonomous_config.announce_results
+            and (task.metadata or {}).get("announce", False)
+        ):
+            try:
+                from ..api.edge.websocket import broadcast_tts_announce
+
+                await broadcast_tts_announce(text, priority=priority)
+                logger.info("Broadcast TTS announce for task '%s'", task.name)
+            except Exception:
+                logger.warning(
+                    "Failed to broadcast TTS for task '%s'", task.name, exc_info=True,
+                )
+
     async def _synthesize_with_skill(
         self,
         raw_result: dict,

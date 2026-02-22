@@ -92,6 +92,7 @@ from .display import (
     CloseCameraFeedTool,
     close_camera_feed_tool,
 )
+from .digest import RunDigestTool, digest_tool
 
 # Register tools on import
 # NOTE: Read-only tools are registered for fast-path execution. Scheduling, reminder,
@@ -128,6 +129,8 @@ tool_registry.register(disarm_zone_tool)
 # Display tools
 tool_registry.register(show_camera_feed_tool)
 tool_registry.register(close_camera_feed_tool)
+# Digest tools
+tool_registry.register(digest_tool)
 # Scheduling tools - available for LLM tool calling in booking conversations
 tool_registry.register(check_availability_tool)
 tool_registry.register(book_appointment_tool)
@@ -233,4 +236,7 @@ __all__ = [
     "show_camera_feed_tool",
     "CloseCameraFeedTool",
     "close_camera_feed_tool",
+    # Digest tool
+    "RunDigestTool",
+    "digest_tool",
 ]
