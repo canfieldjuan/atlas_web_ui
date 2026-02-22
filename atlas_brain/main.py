@@ -213,6 +213,28 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error("Failed to load default LLM: %s", e)
 
+    # Model swap startup check: if model_swap is enabled and it is currently daytime
+    # (7 AM - midnight), ensure the night model is not occupying VRAM.
+    # Runs as a background task so startup is not blocked.
+    if settings.llm.model_swap_enabled and settings.llm.default_model == "ollama":
+        try:
+            from datetime import datetime as _dt
+            import asyncio as _asyncio
+            from .services.llm.model_manager import unload_model as _unload
+
+            _now_hour = _dt.now().hour
+            if 7 <= _now_hour <= 23:  # day window: 7 AM to midnight
+                async def _startup_unload_night():
+                    ok = await _unload(settings.llm.night_model, settings.llm.ollama_url)
+                    if ok:
+                        logger.info(
+                            "Startup: unloaded night model %s (day window, hour=%d)",
+                            settings.llm.night_model, _now_hour,
+                        )
+                _asyncio.create_task(_startup_unload_night())
+        except Exception as e:
+            logger.debug("Startup model swap check failed: %s", e)
+
     # Initialize cloud LLM for business workflows (booking, email)
     if settings.llm.cloud_enabled:
         from .services.llm_router import init_cloud_llm

@@ -163,7 +163,21 @@ class LLMConfig(BaseSettings):
         default="qwen3:32b",
         description=(
             "Ollama model used by graphiti-wrapper at night for email graph extraction. "
-            "Unloaded from VRAM at midnight; graphiti-wrapper loads it on demand at 6 AM."
+            "Unloaded from VRAM at midnight; graphiti-wrapper loads it on demand at 1 AM."
+        ),
+    )
+    model_swap_day_cron: str = Field(
+        default="30 7 * * *",
+        description=(
+            "Cron expression for day model swap: unload night_model, pre-warm day_model. "
+            "Default: 7:30 AM daily. Env: ATLAS_LLM__MODEL_SWAP_DAY_CRON."
+        ),
+    )
+    model_swap_night_cron: str = Field(
+        default="0 0 * * *",
+        description=(
+            "Cron expression for night model swap: unload day_model to free VRAM. "
+            "Default: midnight daily. Env: ATLAS_LLM__MODEL_SWAP_NIGHT_CRON."
         ),
     )
 

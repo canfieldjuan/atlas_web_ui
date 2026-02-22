@@ -158,7 +158,7 @@ class TaskScheduler:
             "description": "Daily extraction of graph-worthy facts from emails to knowledge graph",
             "task_type": "builtin",
             "schedule_type": "cron",
-            "cron_expression": "0 6 * * *",
+            "cron_expression": "0 1 * * *",
             "timeout_seconds": 1800,  # 30 min: ~80s/message * 20 max emails + overhead
             "metadata": {"builtin_handler": "email_graph_sync"},
         },
@@ -331,6 +331,26 @@ class TaskScheduler:
                 "min_samples": 5,
             },
         },
+        # Model swap: keep qwen3:14b loaded during the day, free VRAM at night for graphiti.
+        # Both tasks no-op when ATLAS_LLM__MODEL_SWAP_ENABLED=false (default).
+        {
+            "name": "model_swap_day",
+            "description": "Unload night model (qwen3:32b), pre-warm day model (qwen3:14b) at 7:30 AM",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "30 7 * * *",
+            "timeout_seconds": 120,
+            "metadata": {"builtin_handler": "model_swap_day"},
+        },
+        {
+            "name": "model_swap_night",
+            "description": "Unload day model (qwen3:14b) at midnight to free VRAM for graphiti-wrapper",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "0 0 * * *",
+            "timeout_seconds": 60,
+            "metadata": {"builtin_handler": "model_swap_night"},
+        },
     ]
 
     async def _ensure_default_tasks(self) -> None:
@@ -407,21 +427,24 @@ class TaskScheduler:
             logger.warning("Failed to seed default tasks: %s", e)
 
     async def _sync_configurable_intervals(self) -> None:
-        """Update DB task intervals that differ from current config values.
+        """Update DB task schedules that differ from current config values.
 
-        Allows env-var tuning (e.g. ATLAS_EMAIL_DRAFT_SCHEDULE_INTERVAL_SECONDS)
-        to take effect on restart without manual DB edits.
+        Allows env-var tuning to take effect on restart without manual DB edits.
+        Handles both interval_seconds (e.g. ATLAS_EMAIL_DRAFT_SCHEDULE_INTERVAL_SECONDS)
+        and cron_expression (e.g. ATLAS_LLM__MODEL_SWAP_DAY_CRON).
         """
         try:
             from ..config import settings
             from ..storage.repositories.scheduled_task import get_scheduled_task_repo
 
             repo = get_scheduled_task_repo()
-            overrides = {
+
+            # Interval-based overrides
+            interval_overrides = {
                 "email_draft": settings.email_draft.schedule_interval_seconds,
             }
 
-            for task_name, desired_interval in overrides.items():
+            for task_name, desired_interval in interval_overrides.items():
                 task = await repo.get_by_name(task_name)
                 if task is None or task.interval_seconds == desired_interval:
                     continue
@@ -434,6 +457,28 @@ class TaskScheduler:
                         "Updated '%s' interval: %ss -> %ss (from config)",
                         task_name, old, desired_interval,
                     )
+
+            # Cron-based overrides (model swap times + email_graph_sync migration 6AM->1AM)
+            cron_overrides = {
+                "model_swap_day": settings.llm.model_swap_day_cron,
+                "model_swap_night": settings.llm.model_swap_night_cron,
+                "email_graph_sync": "0 1 * * *",
+            }
+
+            for task_name, desired_cron in cron_overrides.items():
+                task = await repo.get_by_name(task_name)
+                if task is None or task.cron_expression == desired_cron:
+                    continue
+
+                old = task.cron_expression
+                updated = await repo.update(task.id, cron_expression=desired_cron)
+                if updated:
+                    self._register_task(updated)
+                    logger.info(
+                        "Updated '%s' cron: '%s' -> '%s' (from config)",
+                        task_name, old, desired_cron,
+                    )
+
         except Exception as e:
             logger.warning("Failed to sync configurable intervals: %s", e)
 
