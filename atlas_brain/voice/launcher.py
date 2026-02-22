@@ -25,6 +25,9 @@ from .pipeline import (
 
 logger = logging.getLogger("atlas.voice.launcher")
 
+# Minimum facts to retrieve when an entity is detected via graph traversal
+_ENTITY_MIN_FACTS = 5
+
 _voice_pipeline: Optional[VoicePipeline] = None
 _voice_thread: Optional[threading.Thread] = None
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -347,12 +350,14 @@ async def _stream_llm_response(
         try:
             from ..memory.rag_client import get_rag_client
             client = get_rag_client()
+            max_facts = settings.memory.context_results
             if entity_name:
                 logger.info("Voice entity detected: %r -- running parallel search + traversal", entity_name)
+                max_facts = max(max_facts, _ENTITY_MIN_FACTS)
             result = await client.search_with_traversal(
                 query=transcript,
                 entity_name=entity_name,
-                max_facts=settings.memory.context_results,
+                max_facts=max_facts,
             )
             pre_fetched = result.facts
         except Exception as e:
@@ -415,9 +420,21 @@ async def _stream_llm_response(
 
     # Add RAG context from GraphRAG knowledge graph
     if mem_ctx.rag_context_used and mem_ctx.rag_result and mem_ctx.rag_result.sources:
-        rag_facts = [s.fact for s in mem_ctx.rag_result.sources if s.fact]
-        if rag_facts:
-            prompt_parts.append("\nRelevant memory:\n" + "\n".join(f"- {f}" for f in rag_facts))
+        entity_facts = []
+        search_facts = []
+        for s in mem_ctx.rag_result.sources:
+            if not s.fact:
+                continue
+            if s.source_type == "entity_edge":
+                entity_facts.append(s.fact)
+            else:
+                search_facts.append(s.fact)
+
+        if entity_facts:
+            label = f"Known facts about {entity_name}" if entity_name else "Known facts"
+            prompt_parts.append(f"\n{label}:\n" + "\n".join(f"- {f}" for f in entity_facts))
+        if search_facts:
+            prompt_parts.append("\nRelated context:\n" + "\n".join(f"- {f}" for f in search_facts))
 
     # Inject entity context (recent turns + current room for disambiguation)
     try:

@@ -31,6 +31,9 @@ from .presence import run_presence_workflow, PRESENCE_WORKFLOW_TYPE
 
 logger = logging.getLogger("atlas.agents.graphs.atlas")
 
+# Minimum facts to retrieve when an entity is detected via graph traversal
+_ENTITY_MIN_FACTS = 5
+
 # Wake word strip pattern
 _WAKE_WORD_PATTERN = re.compile(
     r"^(?:hey\s+)?(?:jarvis|atlas|computer|assistant)[,.\s]*",
@@ -370,7 +373,7 @@ async def retrieve_memory(
             max_facts = settings.memory.context_results
             if entity_name:
                 logger.info("Entity detected: %r -- running parallel search + traversal", entity_name)
-                max_facts = max(max_facts, 5)
+                max_facts = max(max_facts, _ENTITY_MIN_FACTS)
 
             search_result = await client.search_with_traversal(
                 query=input_text,
@@ -983,7 +986,7 @@ async def _generate_llm_response(
         for s in mem_ctx.rag_result.sources:
             if not s.fact:
                 continue
-            if getattr(s, "source_type", "search") == "entity_edge":
+            if s.source_type == "entity_edge":
                 entity_facts.append(s.fact)
             else:
                 search_facts.append(s.fact)

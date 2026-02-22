@@ -398,6 +398,45 @@ async def generate_response(state: HomeAgentState) -> HomeAgentState:
     return result
 
 
+_HOME_MAX_HISTORY = 4  # 2 exchanges -- enough for follow-ups without bloating prompt
+
+
+async def _fetch_session_history(
+    input_text: str,
+    session_id: Optional[str],
+) -> list:
+    """Fetch recent conversation history from PostgreSQL. Fail-open (returns [])."""
+    if not session_id:
+        return []
+    try:
+        from ...storage.config import db_settings
+        if not db_settings.enabled:
+            return []
+        from ...memory.service import get_memory_service
+        from ...services.protocols import Message
+        mem_ctx = await get_memory_service().gather_context(
+            query=input_text,
+            session_id=session_id,
+            include_rag=False,
+            include_physical=False,
+            include_history=True,
+            max_history=_HOME_MAX_HISTORY,
+        )
+        messages = [
+            Message(role=h["role"], content=h["content"])
+            for h in mem_ctx.conversation_history
+        ]
+        if messages:
+            logger.debug(
+                "Home agent: added %d history turns for session %s",
+                len(messages), session_id,
+            )
+        return messages
+    except Exception as e:
+        logger.debug("Home agent history fetch failed (non-fatal): %s", e)
+        return []
+
+
 async def _generate_llm_response(state: HomeAgentState) -> dict[str, Any]:
     """Generate response using LLM for conversation. Returns dict with response + metadata."""
     from ...services import llm_registry
@@ -418,32 +457,7 @@ async def _generate_llm_response(state: HomeAgentState) -> dict[str, Any]:
     session_id = state.get("session_id")
     system_msg = "You are a helpful home assistant."
 
-    # Fetch conversation history from PostgreSQL (lightweight, no RAG)
-    history_messages: list[Message] = []
-    if session_id:
-        try:
-            from ...storage.config import db_settings
-            if db_settings.enabled:
-                from ...memory.service import get_memory_service
-                mem_ctx = await get_memory_service().gather_context(
-                    query=input_text,
-                    session_id=session_id,
-                    include_rag=False,
-                    include_physical=False,
-                    include_history=True,
-                    max_history=4,
-                )
-                history_messages = [
-                    Message(role=h["role"], content=h["content"])
-                    for h in mem_ctx.conversation_history
-                ]
-                if history_messages:
-                    logger.debug(
-                        "Home agent: added %d history turns for session %s",
-                        len(history_messages), session_id,
-                    )
-        except Exception as e:
-            logger.debug("Home agent history fetch failed (non-fatal): %s", e)
+    history_messages = await _fetch_session_history(input_text, session_id)
 
     messages = [
         Message(role="system", content=system_msg),
@@ -495,32 +509,7 @@ async def _generate_llm_response_with_tools(state: HomeAgentState) -> dict[str, 
     session_id = state.get("session_id")
     intent = state.get("intent")
 
-    # Fetch conversation history from PostgreSQL (lightweight, no RAG)
-    history_messages: list[Message] = []
-    if session_id:
-        try:
-            from ...storage.config import db_settings
-            if db_settings.enabled:
-                from ...memory.service import get_memory_service
-                mem_ctx = await get_memory_service().gather_context(
-                    query=input_text,
-                    session_id=session_id,
-                    include_rag=False,
-                    include_physical=False,
-                    include_history=True,
-                    max_history=4,
-                )
-                history_messages = [
-                    Message(role=h["role"], content=h["content"])
-                    for h in mem_ctx.conversation_history
-                ]
-                if history_messages:
-                    logger.debug(
-                        "Home agent tools: added %d history turns for session %s",
-                        len(history_messages), session_id,
-                    )
-        except Exception as e:
-            logger.debug("Home agent tools history fetch failed (non-fatal): %s", e)
+    history_messages = await _fetch_session_history(input_text, session_id)
 
     system_msg = "You are a helpful assistant. Use tools when needed."
     messages = [
