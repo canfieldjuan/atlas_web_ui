@@ -48,67 +48,52 @@
 
 ## Current Task Assignments — Round 1
 
+### Completed — Round 1:
+- **S1** Migration 036: `contact_id` FK on `call_transcripts` ✓ (fb17380)
+- **S2** Wire `call_intelligence.py` → CRM auto-population ✓ (fb17380)
+- **S3** `CustomerContextService` cross-reference layer ✓ (fb17380)
+- **J1** CRM duplicate protection (`find_or_create_contact` + partial unique indexes) ✓ (0a29b39)
+- **J2** MCP server smoke test + fixes ✓ (0a29b39)
+- **J3** `BookAppointmentTool` → CRM contact linkage ✓ (06a5d3a)
+- **J4** Email provider IMAP graceful fallback ✓ (06a5d3a)
+
+---
+
+## Round 2 — Agency Workflow
+
 ### Senior Session - Active Tasks:
 
-**S1. Migration 036: Add `contact_id` FK to `call_transcripts`**
-- File: `atlas_brain/storage/migrations/036_call_contact_link.sql`
-- Add `contact_id UUID REFERENCES contacts(id) ON DELETE SET NULL` to `call_transcripts`
-- Add index on `contact_id` for join queries
-- This enables linking calls to CRM contacts
+**S4. Action Planner — LLM + CustomerContext → structured action plan**
+- After CRM linkage in call_intelligence pipeline, build full CustomerContext
+- Feed context + call data to LLM with a skill prompt
+- LLM outputs structured JSON action plan: `[{action, params, rationale}]`
+- Store plan on transcript record (enrich `proposed_actions`)
+- New skill: `skills/call/action_planning.md`
 
-**S2. Wire `call_intelligence.py` → CRM auto-population**
-- File: `atlas_brain/comms/call_intelligence.py`
-- After LLM extraction produces `extracted_data` (customer_name, phone, email, intent, services):
-  - Lookup existing contact by phone/email via CRM provider
-  - If not found → create new contact
-  - Link call transcript to contact via new `contact_id` column
-  - Store interaction record in `contact_interactions`
-- Depends on: S1 (migration), J1 (duplicate protection)
-
-**S3. Design `CustomerContextService` (cross-reference layer)**
-- New file: `atlas_brain/services/customer_context.py`
-- Unified view of a customer: recent calls, emails, appointments, CRM notes
-- Query by contact_id, phone, or email
-- Powers the agency workflow: "what do we know about this customer?"
-- Depends on: S2 (call→CRM link exists)
+**S5. Plan approval + execution endpoint**
+- Enhanced ntfy notification showing full plan summary
+- `POST /call-actions/{id}/approve-plan` → execute all planned actions
+- Reuse existing action logic (calendar, email, SMS)
+- Log each executed action to `contact_interactions`
+- `POST /call-actions/{id}/reject-plan` → mark plan rejected
 
 ### Junior Session - Active Tasks:
 
-**J1. CRM duplicate protection**
-- File: `atlas_brain/services/crm_provider.py`
-- Problem: `contacts` table has NO unique constraints on phone/email — duplicates will accumulate
-- Options (pick one):
-  - Add UNIQUE constraint on `phone` and `email` columns (migration 037)
-  - OR implement upsert logic in `create_contact()` — check existing first, update if found
-- Recommendation: upsert in provider + partial unique index (allows NULLs) in migration
-- Test: verify `create_contact()` with same phone twice doesn't create duplicates
+**J5. Wire email inbox into CustomerContext**
+- File: `atlas_brain/services/customer_context.py` (SHARED — coordinate with senior)
+- Add `_get_inbox_emails()` method: search IMAP/Gmail for recent emails from/to the customer's email
+- Uses `email_provider.list_messages(query="from:{email}")` for inbound
+- Merge into `CustomerContext` as `inbox_emails: list[dict]`
+- Fail-open: if IMAP unavailable, return empty list
 
-**J2. MCP server smoke test**
-- Files: `atlas_brain/mcp/` (all 4 servers)
-- Verify each server starts without import errors: `python -c "from atlas_brain.mcp.crm_server import mcp; print('OK')"`
-- Verify tool registration counts match expectations (CRM=9, Email=8, Calendar=8, Twilio=10)
-- Fix any import or config issues found
-
-**J3. Wire `BookAppointmentTool` → CRM contact linkage**
-- File: `atlas_brain/tools/scheduling.py`
-- `BookAppointmentTool.execute()` creates appointments but never sets `contact_id`
-- After booking: lookup/create contact via CRM provider, set `contact_id` on appointment record
-- `LookupCustomerTool` CRM-first path already works — reuse that pattern
-- Depends on: J1 (duplicate protection must be in place first)
-
-**J4. Email provider IMAP validation**
-- File: `atlas_brain/services/email_provider.py`
-- Verify IMAP connection settings are validated on init (host, port, SSL)
-- Add graceful error if IMAP credentials are missing/invalid (don't crash MCP server)
-- Test: `CompositeEmailProvider` falls back cleanly if IMAP is misconfigured
+**J6. MCP tool for CustomerContext**
+- New tool in `atlas_brain/mcp/crm_server.py`: `get_customer_context`
+- Wraps `CustomerContextService.get_context()` / `get_context_by_phone()`
+- Exposes full customer view to MCP clients (NocoDB, external agents)
 
 ### Task Dependencies:
 ```
-S1 (migration) ──→ S2 (call→CRM wire)  ──→ S3 (context service)
-J1 (dedup)     ──→ J3 (booking→CRM)
-J2 (smoke test) — independent, do first
-J4 (IMAP)      — independent, do anytime
+S4 (action planner) ──→ S5 (approval + execution)
+J5 (inbox context)  — independent, enhances S4 output
+J6 (MCP tool)       — independent, can start anytime
 ```
-
-### Completed Tasks:
-(none yet)

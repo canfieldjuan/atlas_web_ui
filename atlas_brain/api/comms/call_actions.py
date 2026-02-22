@@ -1,14 +1,16 @@
 """
 Call action endpoints triggered by ntfy notification buttons.
 
-POST /comms/call-actions/{transcript_id}/book         -> create Google Calendar event
-POST /comms/call-actions/{transcript_id}/sms          -> send confirmation SMS to customer
-GET  /comms/call-actions/{transcript_id}/view         -> return transcript + extracted data
-POST /comms/call-actions/{transcript_id}/draft-email  -> LLM drafts confirmation email
-POST /comms/call-actions/{transcript_id}/draft-sms    -> LLM drafts confirmation SMS
-POST /comms/call-actions/{transcript_id}/send-email   -> send the drafted email via Resend
-POST /comms/call-actions/{transcript_id}/send-sms     -> send the drafted SMS via SignalWire
-POST /comms/call-actions/{transcript_id}/discard      -> discard draft (ntfy clear handler)
+POST /comms/call-actions/{transcript_id}/book          -> create Google Calendar event
+POST /comms/call-actions/{transcript_id}/sms           -> send confirmation SMS to customer
+GET  /comms/call-actions/{transcript_id}/view          -> return transcript + extracted data
+POST /comms/call-actions/{transcript_id}/draft-email   -> LLM drafts confirmation email
+POST /comms/call-actions/{transcript_id}/draft-sms     -> LLM drafts confirmation SMS
+POST /comms/call-actions/{transcript_id}/send-email    -> send the drafted email via Resend
+POST /comms/call-actions/{transcript_id}/send-sms      -> send the drafted SMS via SignalWire
+POST /comms/call-actions/{transcript_id}/approve-plan  -> execute all actions in the plan
+POST /comms/call-actions/{transcript_id}/reject-plan   -> reject the action plan
+POST /comms/call-actions/{transcript_id}/discard       -> discard draft (ntfy clear handler)
 """
 
 import asyncio
@@ -492,6 +494,266 @@ async def send_drafted_sms(transcript_id: UUID):
     except Exception as e:
         logger.error("Failed to send SMS for %s: %s", transcript_id, e)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{transcript_id}/approve-plan")
+async def approve_plan(transcript_id: UUID):
+    """Execute all actions in the proposed action plan.
+
+    Iterates through proposed_actions, executes each one, and logs
+    results to contact_interactions. Sends a summary notification
+    when complete.
+    """
+    record = await _get_transcript_or_404(transcript_id)
+    actions = record.get("proposed_actions") or []
+    data = record.get("extracted_data") or {}
+    biz_name = _get_business_name(record)
+
+    actionable = [a for a in actions if (a.get("action") or a.get("type", "none")) != "none"]
+    if not actionable:
+        return JSONResponse({"status": "ok", "message": "No actionable items in plan"})
+
+    results = []
+    for action in actionable:
+        atype = action.get("action") or action.get("type", "")
+        params = action.get("params") or {}
+        try:
+            result = await _execute_plan_action(
+                atype, params, transcript_id, record, data, biz_name,
+            )
+            results.append({"action": atype, "status": "ok", "detail": result})
+            logger.info("Plan action OK: %s for %s", atype, transcript_id)
+        except Exception as e:
+            results.append({"action": atype, "status": "error", "detail": str(e)})
+            logger.error("Plan action FAIL: %s for %s: %s", atype, transcript_id, e)
+
+    # Log approval to CRM interaction
+    contact_id = record.get("contact_id")
+    if contact_id:
+        try:
+            from ...services.crm_provider import get_crm_provider
+            action_summary = ", ".join(r["action"] for r in results if r["status"] == "ok")
+            await get_crm_provider().log_interaction(
+                contact_id=str(contact_id),
+                interaction_type="plan_approved",
+                summary=f"Action plan approved: {action_summary}" if action_summary else "Plan approved (no actions succeeded)",
+            )
+        except Exception as e:
+            logger.warning("Failed to log plan approval interaction: %s", e)
+
+    # Send completion notification
+    try:
+        await _notify_plan_executed(transcript_id, results, biz_name, data)
+    except Exception as e:
+        logger.warning("Plan execution notification failed: %s", e)
+
+    ok_count = sum(1 for r in results if r["status"] == "ok")
+    return JSONResponse({
+        "status": "ok",
+        "executed": ok_count,
+        "total": len(results),
+        "results": results,
+    })
+
+
+@router.post("/{transcript_id}/reject-plan")
+async def reject_plan(transcript_id: UUID):
+    """Mark the action plan as rejected."""
+    record = await _get_transcript_or_404(transcript_id)
+
+    contact_id = record.get("contact_id")
+    if contact_id:
+        try:
+            from ...services.crm_provider import get_crm_provider
+            await get_crm_provider().log_interaction(
+                contact_id=str(contact_id),
+                interaction_type="plan_rejected",
+                summary="Action plan rejected by user",
+            )
+        except Exception as e:
+            logger.warning("Failed to log plan rejection: %s", e)
+
+    logger.info("Action plan rejected for transcript %s", transcript_id)
+    return JSONResponse({"status": "ok", "message": "Plan rejected"})
+
+
+async def _execute_plan_action(
+    action_type: str,
+    params: dict,
+    transcript_id: UUID,
+    record: dict,
+    extracted_data: dict,
+    business_name: str,
+) -> str:
+    """Execute a single action from the plan. Returns a status message."""
+    if action_type in ("book_appointment", "book_estimate", "create_appointment"):
+        return await _exec_book(transcript_id, record, extracted_data, business_name)
+
+    elif action_type == "send_email":
+        return await _exec_email(transcript_id, record, extracted_data, business_name)
+
+    elif action_type == "send_sms":
+        return await _exec_sms(transcript_id, record, extracted_data)
+
+    elif action_type == "update_contact":
+        return await _exec_update_contact(record, params)
+
+    elif action_type == "schedule_callback":
+        return f"Callback flagged: {params.get('time', 'TBD')}"
+
+    else:
+        return f"Unknown action type: {action_type}"
+
+
+async def _exec_book(
+    transcript_id: UUID, record: dict, data: dict, biz_name: str,
+) -> str:
+    """Book an appointment from plan action."""
+    from ...tools.calendar import calendar_tool
+
+    customer = data.get("customer_name") or "Customer"
+    phone = data.get("customer_phone") or record.get("from_number", "")
+    email = data.get("customer_email") or ""
+    address = data.get("address", "")
+    services = ", ".join(data.get("services_mentioned") or []) or "Service"
+    date_str = data.get("preferred_date") or ""
+    time_str = data.get("preferred_time") or ""
+
+    ctx_id = record.get("business_context_id") or ""
+    ctx = get_context_router().get_context(ctx_id) if ctx_id else None
+    calendar_id = (ctx.scheduling.calendar_id if ctx else None) or None
+    tz_name = ctx.hours.timezone if (ctx and ctx.hours) else "America/Chicago"
+
+    summary = f"Estimate: {customer}"
+    desc_lines = [f"Customer: {customer}", f"Phone: {phone}"]
+    if email:
+        desc_lines.append(f"Email: {email}")
+    if address:
+        desc_lines.append(f"Address: {address}")
+    desc_lines.append(f"Services: {services}")
+
+    start_dt = _parse_event_datetime(date_str, time_str, tz_name)
+    end_dt = start_dt + timedelta(hours=1)
+
+    result = await calendar_tool.create_event(
+        summary=summary, start=start_dt, end=end_dt,
+        location=address or None, description="\n".join(desc_lines),
+        calendar_id=calendar_id,
+    )
+    return f"Booked: {start_dt.strftime('%Y-%m-%d %H:%M')}"
+
+
+async def _exec_email(
+    transcript_id: UUID, record: dict, data: dict, biz_name: str,
+) -> str:
+    """Draft and send a confirmation email."""
+    to_email = data.get("customer_email")
+    if not to_email:
+        return "Skipped: no customer email"
+
+    content = await _generate_draft("email", record, biz_name)
+    if not content:
+        return "Skipped: LLM draft generation failed"
+
+    # Save draft for audit
+    repo = get_call_transcript_repo()
+    await repo.save_draft(transcript_id, "email", content)
+
+    # Parse subject from draft
+    subject = "Following up on your call"
+    body = content
+    lines = content.split("\n")
+    first = next((l for l in lines if l.strip()), "")
+    if first.upper().startswith("SUBJECT:"):
+        subject = first[8:].strip()
+        idx = lines.index(first)
+        body = "\n".join(lines[idx + 1:]).strip()
+
+    from ...comms import get_email_service, EmailMessage
+    svc = get_email_service()
+    msg = EmailMessage(to=to_email, subject=subject, body_text=body)
+    sent = await svc.send_email(msg)
+    if not sent:
+        return "Email send failed"
+    return f"Email sent to {to_email}"
+
+
+async def _exec_sms(
+    transcript_id: UUID, record: dict, data: dict,
+) -> str:
+    """Draft and send a confirmation SMS."""
+    to_number = data.get("customer_phone") or record.get("from_number")
+    if not to_number:
+        return "Skipped: no customer phone"
+
+    biz_name = _get_business_name(record)
+    content = await _generate_draft("sms", record, biz_name)
+    if not content:
+        return "Skipped: LLM draft generation failed"
+
+    repo = get_call_transcript_repo()
+    await repo.save_draft(transcript_id, "sms", content)
+
+    from ...comms import get_comms_service
+    svc = get_comms_service()
+    from_number = record.get("to_number", "")
+    msg = await svc.provider.send_sms(
+        to_number=to_number, from_number=from_number, body=content,
+    )
+    return f"SMS sent to {to_number}"
+
+
+async def _exec_update_contact(record: dict, params: dict) -> str:
+    """Update CRM contact with new info from the plan."""
+    contact_id = record.get("contact_id")
+    if not contact_id:
+        return "Skipped: no linked contact"
+    if not params:
+        return "Skipped: no update params"
+
+    from ...services.crm_provider import get_crm_provider
+    await get_crm_provider().update_contact(str(contact_id), params)
+    return f"Contact {contact_id} updated"
+
+
+async def _notify_plan_executed(
+    transcript_id: UUID,
+    results: list[dict],
+    business_name: str,
+    extracted_data: dict,
+) -> None:
+    """Send ntfy notification summarizing plan execution results."""
+    if not settings.alerts.ntfy_enabled:
+        return
+
+    customer = extracted_data.get("customer_name") or "Customer"
+    ok = [r for r in results if r["status"] == "ok"]
+    failed = [r for r in results if r["status"] == "error"]
+
+    lines = [f"Customer: {customer}"]
+    if ok:
+        lines.append(f"Completed ({len(ok)}):")
+        for r in ok:
+            lines.append(f"  {r['action'].replace('_', ' ').title()}: {r['detail']}")
+    if failed:
+        lines.append(f"Failed ({len(failed)}):")
+        for r in failed:
+            lines.append(f"  {r['action'].replace('_', ' ').title()}: {r['detail']}")
+
+    message = "\n".join(lines)
+    api_url = _api_url()
+    actions = f"view, View Transcript, {api_url}/api/v1/comms/call-actions/{transcript_id}/view"
+
+    headers = {
+        "Title": f"{business_name}: Plan Executed",
+        "Priority": "default",
+        "Tags": "white_check_mark" if not failed else "warning",
+        "Actions": actions,
+    }
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(_ntfy_url(), content=message, headers=headers)
+        resp.raise_for_status()
 
 
 @router.post("/{transcript_id}/discard")

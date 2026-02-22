@@ -7,7 +7,8 @@ After a call ends and SignalWire produces a recording:
 3. Extract structured data via LLM (qwen3:14b)
 4. Store results in call_transcripts table
 5. Look up or create CRM contact, link call transcript
-6. Push ntfy notification with summary
+6. Generate action plan (LLM + full CustomerContext)
+7. Push ntfy notification with plan summary + approval buttons
 """
 
 import asyncio
@@ -75,18 +76,18 @@ async def process_call_recording(
             duration=duration_seconds,
         )
         transcript_id = record["id"]
-        logger.info("Step 1/6 OK: DB record created id=%s for call %s", transcript_id, call_sid)
+        logger.info("Step 1/7 OK: DB record created id=%s for call %s", transcript_id, call_sid)
     except Exception as e:
-        logger.error("Step 1/6 FAIL: DB record creation for %s: %s", call_sid, e)
+        logger.error("Step 1/7 FAIL: DB record creation for %s: %s", call_sid, e)
         return
 
     # Step 2: Download recording from SignalWire
     try:
         await repo.update_status(transcript_id, "transcribing")
         audio_bytes = await _download_recording(recording_url)
-        logger.info("Step 2/6 OK: Downloaded recording %d bytes for %s", len(audio_bytes), call_sid)
+        logger.info("Step 2/7 OK: Downloaded recording %d bytes for %s", len(audio_bytes), call_sid)
     except Exception as e:
-        logger.error("Step 2/6 FAIL: Download for %s: %s", call_sid, e)
+        logger.error("Step 2/7 FAIL: Download for %s: %s", call_sid, e)
         await _safe_update_status(repo, transcript_id, "error", f"Download: {e}")
         return
 
@@ -94,7 +95,7 @@ async def process_call_recording(
     try:
         transcript = await _transcribe_audio(audio_bytes)
         if not transcript:
-            logger.info("Step 3/6: Empty transcript for %s, marking ready", call_sid)
+            logger.info("Step 3/7: Empty transcript for %s, marking ready", call_sid)
             await repo.update_transcript(transcript_id, "")
             await repo.update_extraction(
                 transcript_id,
@@ -105,9 +106,9 @@ async def process_call_recording(
             await repo.update_status(transcript_id, "ready")
             return
         await repo.update_transcript(transcript_id, transcript)
-        logger.info("Step 3/6 OK: Transcribed %d chars for %s", len(transcript), call_sid)
+        logger.info("Step 3/7 OK: Transcribed %d chars for %s", len(transcript), call_sid)
     except Exception as e:
-        logger.error("Step 3/6 FAIL: Transcription for %s: %s", call_sid, e)
+        logger.error("Step 3/7 FAIL: Transcription for %s: %s", call_sid, e)
         await _safe_update_status(repo, transcript_id, "error", f"Transcription: {e}")
         return
 
@@ -120,11 +121,11 @@ async def process_call_recording(
         await repo.update_extraction(transcript_id, summary, extracted_data, proposed_actions)
         await repo.update_status(transcript_id, "ready")
         logger.info(
-            "Step 4/6 OK: Extracted data for %s: summary=%s actions=%d",
+            "Step 4/7 OK: Extracted data for %s: summary=%s actions=%d",
             call_sid, summary[:80], len(proposed_actions),
         )
     except Exception as e:
-        logger.error("Step 4/6 FAIL: Extraction for %s: %s", call_sid, e)
+        logger.error("Step 4/7 FAIL: Extraction for %s: %s", call_sid, e)
         await _safe_update_status(repo, transcript_id, "error", f"Extraction: {e}")
         return
 
@@ -136,23 +137,43 @@ async def process_call_recording(
             from_number, context_id, extracted_data, summary,
         )
         if contact_id:
-            logger.info("Step 5/6 OK: Linked call %s to contact %s", call_sid, contact_id)
+            logger.info("Step 5/7 OK: Linked call %s to contact %s", call_sid, contact_id)
         else:
-            logger.info("Step 5/6 OK: No CRM link created for %s (insufficient data)", call_sid)
+            logger.info("Step 5/7 OK: No CRM link created for %s (insufficient data)", call_sid)
     except Exception as e:
-        logger.error("Step 5/6 FAIL: CRM link for %s: %s", call_sid, e)
+        logger.error("Step 5/7 FAIL: CRM link for %s: %s", call_sid, e)
 
-    # Step 6: Notify
+    # Step 6: Generate action plan (LLM + CustomerContext)
+    action_plan = proposed_actions  # fallback to extraction-time actions
+    try:
+        action_plan = await _generate_action_plan(
+            transcript_id, contact_id, summary,
+            extracted_data, business_context,
+        )
+        if action_plan:
+            await repo.update_extraction(
+                transcript_id, summary, extracted_data, action_plan,
+            )
+            logger.info(
+                "Step 6/7 OK: Action plan for %s: %d actions",
+                call_sid, len(action_plan),
+            )
+        else:
+            logger.info("Step 6/7 OK: No plan generated for %s, keeping extraction actions", call_sid)
+    except Exception as e:
+        logger.error("Step 6/7 FAIL: Action plan for %s: %s", call_sid, e)
+
+    # Step 7: Notify
     try:
         await _notify_call_summary(
             repo, transcript_id, call_sid,
             from_number, duration_seconds,
-            summary, extracted_data, proposed_actions,
+            summary, extracted_data, action_plan,
             business_context,
         )
-        logger.info("Step 6/6 OK: Notification sent for %s", call_sid)
+        logger.info("Step 7/7 OK: Notification sent for %s", call_sid)
     except Exception as e:
-        logger.error("Step 6/6 FAIL: Notification for %s: %s", call_sid, e)
+        logger.error("Step 7/7 FAIL: Notification for %s: %s", call_sid, e)
 
 
 async def _download_recording(recording_url: str) -> bytes:
@@ -358,6 +379,41 @@ def _find_matching_brace(text: str, start: int) -> int:
     return -1
 
 
+async def _generate_action_plan(
+    transcript_id: UUID,
+    contact_id: Optional[str],
+    summary: str,
+    extracted_data: dict,
+    business_context=None,
+) -> list[dict]:
+    """Build CustomerContext and generate an LLM action plan.
+
+    Returns a list of action dicts [{action, priority, params, rationale}],
+    or empty list if planning was skipped (e.g. no contact, trivial call).
+    """
+    from .action_planner import generate_action_plan
+    from ..services.customer_context import CustomerContext, get_customer_context_service
+
+    # Skip planning for calls with no actionable intent
+    intent = extracted_data.get("intent", "")
+    if intent in ("personal_call", "wrong_number", "spam"):
+        return []
+
+    # Build customer context (if we have a contact)
+    if contact_id:
+        ctx = await get_customer_context_service().get_context(contact_id)
+    else:
+        ctx = CustomerContext()
+
+    return await generate_action_plan(
+        transcript_id=transcript_id,
+        call_summary=summary,
+        extracted_data=extracted_data,
+        customer_context=ctx,
+        business_context=business_context,
+    )
+
+
 async def _link_to_crm(
     repo,
     transcript_id: UUID,
@@ -505,38 +561,59 @@ async def _notify_call_summary(
     if notes:
         lines.append(f"Notes: {notes}")
 
+    # Format action plan summary
+    has_plan = False
     if proposed_actions:
-        actions_str = "; ".join(
-            a.get("label", a.get("type", "")) for a in proposed_actions
-            if a.get("type") != "none"
-        )
-        if actions_str:
-            lines.append(f"Follow-up: {actions_str}")
+        plan_lines = []
+        for a in proposed_actions:
+            # Support both old format (type/label) and new format (action/rationale)
+            atype = a.get("action") or a.get("type", "none")
+            if atype == "none":
+                continue
+            rationale = a.get("rationale") or a.get("label", "")
+            plan_lines.append(f"  {atype.replace('_', ' ').title()}: {rationale}")
+        if plan_lines:
+            has_plan = True
+            lines.append("\nAction Plan:")
+            lines.extend(plan_lines)
 
     message = "\n".join(lines)
 
-    # Build ntfy action buttons from proposed_actions
+    # Build ntfy action buttons
     action_parts = []
-    for action in proposed_actions:
-        atype = action.get("type", "none")
-        if atype in ("book_estimate", "create_appointment", "book_appointment"):
-            action_parts.append(
-                f"http, Book Appointment, {api_url}/api/v1/comms/call-actions/{transcript_id}/book, "
-                f"method=POST, clear=true"
-            )
-        elif atype in ("send_sms", "send_followup", "schedule_callback"):
-            action_parts.append(
-                f"http, Send SMS, {api_url}/api/v1/comms/call-actions/{transcript_id}/sms, "
-                f"method=POST, clear=true"
-            )
+    if has_plan:
+        # Single "Approve Plan" button that executes all actions
+        action_parts.append(
+            f"http, Approve Plan, {api_url}/api/v1/comms/call-actions/{transcript_id}/approve-plan, "
+            f"method=POST, clear=true"
+        )
+        action_parts.append(
+            f"http, Reject, {api_url}/api/v1/comms/call-actions/{transcript_id}/reject-plan, "
+            f"method=POST, clear=true"
+        )
+    else:
+        # Fallback: individual action buttons (legacy format)
+        for action in proposed_actions:
+            atype = action.get("type") or action.get("action", "none")
+            if atype in ("book_estimate", "create_appointment", "book_appointment"):
+                action_parts.append(
+                    f"http, Book Appointment, {api_url}/api/v1/comms/call-actions/{transcript_id}/book, "
+                    f"method=POST, clear=true"
+                )
+            elif atype in ("send_sms", "send_followup", "schedule_callback"):
+                action_parts.append(
+                    f"http, Send SMS, {api_url}/api/v1/comms/call-actions/{transcript_id}/sms, "
+                    f"method=POST, clear=true"
+                )
     action_parts.append(
         f"view, View Transcript, {api_url}/api/v1/comms/call-actions/{transcript_id}/view"
     )
     actions_header = "; ".join(action_parts)
 
+    title = f"{biz_name}: Action Plan" if has_plan else f"{biz_name}: Call Summary"
     headers = {
-        "Title": f"{biz_name}: Call Summary",
-        "Priority": "default",
+        "Title": title,
+        "Priority": "high" if has_plan else "default",
         "Tags": "phone,call",
         "Actions": actions_header,
     }
