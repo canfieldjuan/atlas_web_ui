@@ -166,6 +166,23 @@ class CallTranscriptRepository:
         except Exception as e:
             raise DatabaseOperationError("save draft", e)
 
+    async def link_contact(self, transcript_id: UUID, contact_id: str) -> None:
+        """Set the CRM contact_id on a call transcript."""
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            raise DatabaseUnavailableError("link contact")
+
+        try:
+            await pool.execute(
+                "UPDATE call_transcripts SET contact_id = $2 WHERE id = $1",
+                transcript_id,
+                contact_id,
+            )
+        except DatabaseUnavailableError:
+            raise
+        except Exception as e:
+            raise DatabaseOperationError("link contact", e)
+
     async def mark_notified(self, transcript_id: UUID) -> None:
         """Mark transcript as notified."""
         pool = get_db_pool()
@@ -215,6 +232,31 @@ class CallTranscriptRepository:
             raise
         except Exception as e:
             raise DatabaseOperationError("get by id", e)
+
+    async def get_by_contact_id(
+        self, contact_id: str, limit: int = 20,
+    ) -> list[dict]:
+        """Get call transcripts linked to a CRM contact."""
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            raise DatabaseUnavailableError("get by contact id")
+
+        try:
+            rows = await pool.fetch(
+                """
+                SELECT * FROM call_transcripts
+                WHERE contact_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2
+                """,
+                contact_id,
+                limit,
+            )
+            return [self._row_to_dict(row) for row in rows]
+        except DatabaseUnavailableError:
+            raise
+        except Exception as e:
+            raise DatabaseOperationError("get by contact id", e)
 
     async def get_recent(
         self,

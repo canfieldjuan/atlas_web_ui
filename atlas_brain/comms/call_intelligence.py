@@ -6,7 +6,8 @@ After a call ends and SignalWire produces a recording:
 2. Transcribe via local ASR server (Nemotron)
 3. Extract structured data via LLM (qwen3:14b)
 4. Store results in call_transcripts table
-5. Push ntfy notification with summary
+5. Look up or create CRM contact, link call transcript
+6. Push ntfy notification with summary
 """
 
 import asyncio
@@ -74,18 +75,18 @@ async def process_call_recording(
             duration=duration_seconds,
         )
         transcript_id = record["id"]
-        logger.info("Step 1/5 OK: DB record created id=%s for call %s", transcript_id, call_sid)
+        logger.info("Step 1/6 OK: DB record created id=%s for call %s", transcript_id, call_sid)
     except Exception as e:
-        logger.error("Step 1/5 FAIL: DB record creation for %s: %s", call_sid, e)
+        logger.error("Step 1/6 FAIL: DB record creation for %s: %s", call_sid, e)
         return
 
     # Step 2: Download recording from SignalWire
     try:
         await repo.update_status(transcript_id, "transcribing")
         audio_bytes = await _download_recording(recording_url)
-        logger.info("Step 2/5 OK: Downloaded recording %d bytes for %s", len(audio_bytes), call_sid)
+        logger.info("Step 2/6 OK: Downloaded recording %d bytes for %s", len(audio_bytes), call_sid)
     except Exception as e:
-        logger.error("Step 2/5 FAIL: Download for %s: %s", call_sid, e)
+        logger.error("Step 2/6 FAIL: Download for %s: %s", call_sid, e)
         await _safe_update_status(repo, transcript_id, "error", f"Download: {e}")
         return
 
@@ -93,7 +94,7 @@ async def process_call_recording(
     try:
         transcript = await _transcribe_audio(audio_bytes)
         if not transcript:
-            logger.info("Step 3/5: Empty transcript for %s, marking ready", call_sid)
+            logger.info("Step 3/6: Empty transcript for %s, marking ready", call_sid)
             await repo.update_transcript(transcript_id, "")
             await repo.update_extraction(
                 transcript_id,
@@ -104,9 +105,9 @@ async def process_call_recording(
             await repo.update_status(transcript_id, "ready")
             return
         await repo.update_transcript(transcript_id, transcript)
-        logger.info("Step 3/5 OK: Transcribed %d chars for %s", len(transcript), call_sid)
+        logger.info("Step 3/6 OK: Transcribed %d chars for %s", len(transcript), call_sid)
     except Exception as e:
-        logger.error("Step 3/5 FAIL: Transcription for %s: %s", call_sid, e)
+        logger.error("Step 3/6 FAIL: Transcription for %s: %s", call_sid, e)
         await _safe_update_status(repo, transcript_id, "error", f"Transcription: {e}")
         return
 
@@ -119,15 +120,29 @@ async def process_call_recording(
         await repo.update_extraction(transcript_id, summary, extracted_data, proposed_actions)
         await repo.update_status(transcript_id, "ready")
         logger.info(
-            "Step 4/5 OK: Extracted data for %s: summary=%s actions=%d",
+            "Step 4/6 OK: Extracted data for %s: summary=%s actions=%d",
             call_sid, summary[:80], len(proposed_actions),
         )
     except Exception as e:
-        logger.error("Step 4/5 FAIL: Extraction for %s: %s", call_sid, e)
+        logger.error("Step 4/6 FAIL: Extraction for %s: %s", call_sid, e)
         await _safe_update_status(repo, transcript_id, "error", f"Extraction: {e}")
         return
 
-    # Step 5: Notify
+    # Step 5: Link to CRM contact
+    contact_id = None
+    try:
+        contact_id = await _link_to_crm(
+            repo, transcript_id, call_sid,
+            from_number, context_id, extracted_data, summary,
+        )
+        if contact_id:
+            logger.info("Step 5/6 OK: Linked call %s to contact %s", call_sid, contact_id)
+        else:
+            logger.info("Step 5/6 OK: No CRM link created for %s (insufficient data)", call_sid)
+    except Exception as e:
+        logger.error("Step 5/6 FAIL: CRM link for %s: %s", call_sid, e)
+
+    # Step 6: Notify
     try:
         await _notify_call_summary(
             repo, transcript_id, call_sid,
@@ -135,9 +150,9 @@ async def process_call_recording(
             summary, extracted_data, proposed_actions,
             business_context,
         )
-        logger.info("Step 5/5 OK: Notification sent for %s", call_sid)
+        logger.info("Step 6/6 OK: Notification sent for %s", call_sid)
     except Exception as e:
-        logger.error("Step 5/5 FAIL: Notification for %s: %s", call_sid, e)
+        logger.error("Step 6/6 FAIL: Notification for %s: %s", call_sid, e)
 
 
 async def _download_recording(recording_url: str) -> bytes:
@@ -341,6 +356,88 @@ def _find_matching_brace(text: str, start: int) -> int:
             if depth == 0:
                 return i
     return -1
+
+
+async def _link_to_crm(
+    repo,
+    transcript_id: UUID,
+    call_sid: str,
+    from_number: str,
+    context_id: str,
+    extracted_data: dict,
+    summary: str,
+) -> Optional[str]:
+    """Look up or create a CRM contact from call extraction data.
+
+    Returns the contact_id if linked, or None if there wasn't enough data.
+    Fail-open: errors are logged but never block the pipeline.
+    """
+    from ..services.crm_provider import get_crm_provider
+    from ..storage.database import get_db_pool
+
+    pool = get_db_pool()
+    if not pool.is_initialized:
+        logger.debug("CRM link skipped: DB pool not initialized")
+        return None
+
+    phone = extracted_data.get("customer_phone") or from_number
+    email = extracted_data.get("customer_email")
+    name = extracted_data.get("customer_name")
+
+    if not phone and not email:
+        return None
+
+    crm = get_crm_provider()
+
+    # Try to find an existing contact by phone first, then email
+    existing = None
+    if phone:
+        results = await crm.search_contacts(phone=phone)
+        if results:
+            existing = results[0]
+    if not existing and email:
+        results = await crm.search_contacts(email=email)
+        if results:
+            existing = results[0]
+
+    if existing:
+        contact_id = str(existing["id"])
+        # Update name if we learned it from this call and it was missing
+        if name and not existing.get("full_name"):
+            parts = name.split(None, 1)
+            await crm.update_contact(contact_id, {
+                "full_name": name,
+                "first_name": parts[0],
+                "last_name": parts[1] if len(parts) > 1 else None,
+            })
+    else:
+        # Create a new contact from call data
+        parts = name.split(None, 1) if name else []
+        contact = await crm.create_contact({
+            "full_name": name or phone or "Unknown Caller",
+            "first_name": parts[0] if parts else None,
+            "last_name": parts[1] if len(parts) > 1 else None,
+            "phone": phone,
+            "email": email,
+            "address": extracted_data.get("address"),
+            "business_context_id": context_id,
+            "contact_type": "customer",
+            "source": "phone_call",
+            "source_ref": str(transcript_id),
+        })
+        contact_id = str(contact["id"])
+
+    # Link the call transcript to the contact
+    await repo.link_contact(transcript_id, contact_id)
+
+    # Log the interaction
+    await crm.log_interaction(
+        contact_id=contact_id,
+        interaction_type="call",
+        summary=summary or f"Inbound call from {from_number}",
+    )
+
+    return contact_id
 
 
 async def _notify_call_summary(
