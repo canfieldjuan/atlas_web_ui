@@ -1206,6 +1206,26 @@ class DeviceResolverConfig(BaseSettings):
     )
 
 
+class EntityContextConfig(BaseSettings):
+    """Configuration for voice entity context between turns."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ATLAS_ENTITY_CONTEXT__",
+        env_file=".env",
+        extra="ignore",
+    )
+
+    max_age_s: float = Field(
+        default=600.0,
+        ge=0.0,
+        description=(
+            "Maximum age in seconds for entity context entries. "
+            "Entities from turns older than this are dropped at read time. "
+            "0 = no expiry."
+        ),
+    )
+
+
 class FreeModeConfig(BaseSettings):
     """Free Conversation Mode — always-on listening when conditions are met.
 
@@ -1646,6 +1666,7 @@ class Settings(BaseSettings):
     device_resolver: DeviceResolverConfig = Field(default_factory=DeviceResolverConfig)
     voice_filter: VoiceFilterConfig = Field(default_factory=VoiceFilterConfig)
     free_mode: FreeModeConfig = Field(default_factory=FreeModeConfig)
+    entity_context: EntityContextConfig = Field(default_factory=EntityContextConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     workflows: WorkflowConfig = Field(default_factory=WorkflowConfig)

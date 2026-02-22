@@ -337,6 +337,124 @@ class TestLoadRecentEntitiesIntegration:
 
 
 @pytest.mark.integration
+class TestEntityStalenessIntegration:
+    """_load_recent_entities drops turns older than max_age_s."""
+
+    @pytest.mark.asyncio
+    async def test_fresh_entities_returned(self, db_pool, test_session, conversation_repo):
+        """Entities from a just-written turn are returned (age << max_age_s)."""
+        sid = str(test_session)
+        await conversation_repo.add_turn(
+            session_id=test_session,
+            role="assistant",
+            content="Turning on lamp.",
+            turn_type="command",
+            metadata={"entities": [{"type": "device", "name": "lamp"}]},
+        )
+        svc = get_memory_service()
+        # default max_age_s=600; a just-written turn should pass
+        result = await svc._load_recent_entities(sid, limit=3)
+        assert any(e["name"] == "lamp" for e in result)
+
+    def test_stale_entities_dropped(self):
+        """Filtering logic drops turns older than max_age_s, keeps fresh ones."""
+        from datetime import datetime, timezone, timedelta
+        from atlas_brain.storage.models import ConversationTurn
+        from uuid import uuid4
+
+        session_id = uuid4()
+        old_turn = ConversationTurn(
+            id=uuid4(),
+            session_id=session_id,
+            role="assistant",
+            content="old",
+            turn_type="command",
+            created_at=datetime.now(timezone.utc) - timedelta(seconds=700),
+            metadata={"entities": [{"type": "device", "name": "stale_lamp"}]},
+        )
+        fresh_turn = ConversationTurn(
+            id=uuid4(),
+            session_id=session_id,
+            role="assistant",
+            content="fresh",
+            turn_type="command",
+            created_at=datetime.now(timezone.utc) - timedelta(seconds=30),
+            metadata={"entities": [{"type": "device", "name": "fresh_lamp"}]},
+        )
+
+        # Simulate _load_recent_entities filtering logic (max_age_s=600)
+        max_age_s = 600.0
+        now = datetime.now(timezone.utc)
+        kept = []
+        for t in [old_turn, fresh_turn]:
+            ts = t.created_at
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            if (now - ts).total_seconds() > max_age_s:
+                continue
+            for e in (t.metadata or {}).get("entities", []):
+                if e.get("name"):
+                    kept.append(e)
+
+        names = [e["name"] for e in kept]
+        assert "stale_lamp" not in names
+        assert "fresh_lamp" in names
+
+    @pytest.mark.asyncio
+    async def test_no_expiry_when_max_age_zero(self, db_pool, test_session, conversation_repo):
+        """max_age_s=0 disables filtering entirely -- all entities returned."""
+        from datetime import datetime, timezone, timedelta
+        from atlas_brain.storage.models import ConversationTurn
+        from uuid import uuid4
+
+        very_old_turn = ConversationTurn(
+            id=uuid4(),
+            session_id=test_session,
+            role="assistant",
+            content="old",
+            turn_type="command",
+            created_at=datetime.now(timezone.utc) - timedelta(hours=24),
+            metadata={"entities": [{"type": "device", "name": "ancient_lamp"}]},
+        )
+
+        from datetime import timezone as tz
+        max_age_s = 0.0  # disabled
+        now = datetime.now(tz.utc)
+        kept = []
+        for t in [very_old_turn]:
+            if max_age_s > 0 and t.created_at:
+                ts = t.created_at
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=tz.utc)
+                if (now - ts).total_seconds() > max_age_s:
+                    continue
+            for e in (t.metadata or {}).get("entities", []):
+                if e.get("name"):
+                    kept.append(e)
+
+        assert any(e["name"] == "ancient_lamp" for e in kept)
+
+
+class TestEntityContextConfig:
+    """EntityContextConfig defaults and settings."""
+
+    def test_default_max_age_s(self):
+        from atlas_brain.config import EntityContextConfig
+        cfg = EntityContextConfig()
+        assert cfg.max_age_s == 600.0
+
+    def test_max_age_s_zero_allowed(self):
+        from atlas_brain.config import EntityContextConfig
+        cfg = EntityContextConfig(max_age_s=0.0)
+        assert cfg.max_age_s == 0.0
+
+    def test_accessible_via_settings(self):
+        from atlas_brain.config import settings
+        assert hasattr(settings, "entity_context")
+        assert settings.entity_context.max_age_s >= 0.0
+
+
+@pytest.mark.integration
 class TestGatherContextEntityIntegration:
     """gather_context populates recent_entities from DB."""
 

@@ -257,12 +257,23 @@ class MemoryService:
             return []
 
         try:
+            from datetime import timezone as _tz
+            from ..config import settings as _settings
             conv_repo = get_conversation_repo()
             session_uuid = UUID(session_id)
             # turn_type=None -> all types (conversation + command)
             turns = await conv_repo.get_history(session_uuid, limit=limit, turn_type=None)
+            max_age_s = _settings.entity_context.max_age_s
+            now = datetime.now(_tz.utc)
             entities = []
             for t in turns:
+                if max_age_s > 0 and t.created_at:
+                    # created_at from asyncpg may be naive (UTC) -- normalise
+                    ts = t.created_at
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=_tz.utc)
+                    if (now - ts).total_seconds() > max_age_s:
+                        continue
                 for e in (t.metadata or {}).get("entities", []):
                     if e.get("name"):
                         entities.append(e)
