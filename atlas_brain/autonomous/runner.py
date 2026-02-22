@@ -258,7 +258,7 @@ class HeadlessRunner:
             )
             return None
 
-        # Use a task-specific LLM if requested (e.g. "triage" → Claude Haiku)
+        # Use a task-specific LLM if requested (e.g. "triage" -> Claude Haiku)
         llm = None
         if synthesis_llm:
             from ..services.llm_router import get_llm

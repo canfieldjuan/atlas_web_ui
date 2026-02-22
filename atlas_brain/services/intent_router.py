@@ -47,6 +47,7 @@ PARAMETERLESS_TOOLS = {
     "where_am_i",
     "who_is_here",
     "run_digest",
+    "get_motion_events",
 }
 
 
@@ -175,11 +176,17 @@ ROUTE_DEFINITIONS: dict[str, list[str]] = {
     ],
     "detection_query": [
         "who was at the front door", "who is at the back door",
-        "is anyone outside", "any motion on the cameras",
-        "what did the cameras see", "who came by today",
+        "is anyone outside", "what did the cameras see", "who came by today",
         "was there anyone at the driveway", "any people detected recently",
         "check the front door", "is anybody at the front door camera",
-        "check if someone is on the security camera", "check for motion activity",
+        "check if someone is on the security camera",
+    ],
+    "motion_query": [
+        "any motion on the cameras", "check for motion activity",
+        "was there any motion", "any movement outside",
+        "motion events today", "any motion at the back door",
+        "has there been any motion", "what motion was detected",
+        "any activity on the cameras", "motion history",
     ],
     "digest": [
         "give me my morning briefing", "morning briefing",
@@ -243,6 +250,7 @@ ROUTE_TO_ACTION: dict[str, tuple[str, Optional[str]]] = {
     "security":         ("device_command", None),
     "presence":         ("device_command", None),
     "detection_query":  ("tool_use", "get_person_at_location"),
+    "motion_query":     ("tool_use", "get_motion_events"),
     "digest":           ("tool_use", "run_digest"),
     "conversation":     ("conversation", None),
 }
@@ -650,7 +658,8 @@ class SemanticIntentRouter:
                 "- notification: send a push notification\n"
                 "- show_camera: show a camera feed\n"
                 "- security/presence: arm security or check presence sensors\n"
-                "- detection_query: ask who was at a door/camera, check for motion or people\n"
+                "- detection_query: ask who was at a door/camera, check for people\n"
+                "- motion_query: ask about motion or movement on cameras\n"
                 "- digest: request a briefing, summary, or status report\n"
                 "- conversation: general chat, personal questions, opinions, "
                 "knowledge recall, or anything not matching above\n"
