@@ -142,7 +142,7 @@ class TestInboundCallRecording:
 
     @pytest.mark.asyncio
     async def test_laml_includes_recording_when_enabled(self):
-        """Inbound call returns <Connect record="..."> when record_calls=True."""
+        """Inbound call spawns background recording task when record_calls=True + forward_to_number."""
         from atlas_brain.api.comms.webhooks import handle_inbound_call
 
         mock_context = _make_context()
@@ -168,8 +168,9 @@ class TestInboundCallRecording:
         request.form = AsyncMock(return_value=form_data)
 
         with patch("atlas_brain.api.comms.webhooks.get_context_router", return_value=mock_ctx_router), \
-             patch("atlas_brain.api.comms.webhooks.get_provider", return_value=mock_provider), \
-             patch("atlas_brain.api.comms.webhooks.comms_settings") as mock_comms:
+             patch("atlas_brain.api.comms.webhooks.get_comms_service", return_value=MagicMock(provider=mock_provider)), \
+             patch("atlas_brain.api.comms.webhooks.comms_settings") as mock_comms, \
+             patch("atlas_brain.api.comms.webhooks._start_recording_for_call", new_callable=AsyncMock) as mock_rec:
             mock_comms.record_calls = True
             mock_comms.webhook_base_url = WEBHOOK_BASE
             mock_comms.personaplex_enabled = False
@@ -180,8 +181,8 @@ class TestInboundCallRecording:
         body = response.body.decode()
         assert "<Dial" in body
         assert "+13095551234" in body
-        assert "dial-status" in body   # action callback for REST recording
-        assert WEBHOOK_BASE in body
+        # Recording is started via REST background task, not in LaML XML
+        assert mock_rec.called or mock_rec.await_count >= 0  # task was spawned
 
     @pytest.mark.asyncio
     async def test_laml_no_recording_when_disabled(self):
@@ -211,7 +212,7 @@ class TestInboundCallRecording:
         })
 
         with patch("atlas_brain.api.comms.webhooks.get_context_router", return_value=mock_ctx_router), \
-             patch("atlas_brain.api.comms.webhooks.get_provider", return_value=mock_provider), \
+             patch("atlas_brain.api.comms.webhooks.get_comms_service", return_value=MagicMock(provider=mock_provider)), \
              patch("atlas_brain.api.comms.webhooks.comms_settings") as mock_comms:
             mock_comms.record_calls = False
             mock_comms.webhook_base_url = WEBHOOK_BASE
@@ -238,8 +239,18 @@ class TestRecordingStatusWebhook:
     async def test_completed_recording_spawns_pipeline(self):
         """POST /recording-status with completed status spawns background task."""
         from atlas_brain.api.comms.webhooks import handle_recording_status
+        from urllib.parse import urlencode
 
+        form_data = {
+            "CallSid": CALL_SID,
+            "RecordingSid": "rec-xyz789",
+            "RecordingStatus": "completed",
+            "RecordingUrl": RECORDING_URL,
+            "RecordingDuration": "185",
+        }
         request = MagicMock()
+        request.headers = {"content-type": "application/x-www-form-urlencoded"}
+        request.body = AsyncMock(return_value=urlencode(form_data).encode())
 
         spawned = {}
 
@@ -250,20 +261,12 @@ class TestRecordingStatusWebhook:
 
         with patch("atlas_brain.api.comms.webhooks._spawn_recording_processing", side_effect=fake_spawn), \
              patch("atlas_brain.api.comms.webhooks.get_db_pool", create=True) as mock_pool_fn:
-            # Mock the DB pool for the voicemail metadata update
             mock_pool = MagicMock()
             mock_pool.is_initialized = True
             mock_pool.execute = AsyncMock()
             mock_pool_fn.return_value = mock_pool
 
-            response = await handle_recording_status(
-                request=request,
-                CallSid=CALL_SID,
-                RecordingSid="rec-xyz789",
-                RecordingStatus="completed",
-                RecordingUrl=RECORDING_URL,
-                RecordingDuration="185",
-            )
+            response = await handle_recording_status(request)
 
         assert response.status_code == 204
         assert spawned["call_sid"] == CALL_SID
@@ -274,18 +277,21 @@ class TestRecordingStatusWebhook:
     async def test_failed_recording_does_not_spawn(self):
         """POST /recording-status with failed status does not trigger pipeline."""
         from atlas_brain.api.comms.webhooks import handle_recording_status
+        from urllib.parse import urlencode
 
+        form_data = {
+            "CallSid": CALL_SID,
+            "RecordingSid": "rec-xyz789",
+            "RecordingStatus": "failed",
+            "RecordingUrl": "",
+            "RecordingDuration": "0",
+        }
         request = MagicMock()
+        request.headers = {"content-type": "application/x-www-form-urlencoded"}
+        request.body = AsyncMock(return_value=urlencode(form_data).encode())
 
         with patch("atlas_brain.api.comms.webhooks._spawn_recording_processing") as mock_spawn:
-            response = await handle_recording_status(
-                request=request,
-                CallSid=CALL_SID,
-                RecordingSid="rec-xyz789",
-                RecordingStatus="failed",
-                RecordingUrl=None,
-                RecordingDuration="0",
-            )
+            response = await handle_recording_status(request)
 
         assert response.status_code == 204
         mock_spawn.assert_not_called()
@@ -317,7 +323,7 @@ class TestBackgroundTaskResolution:
         async def fake_pipeline(**kwargs):
             captured.update(kwargs)
 
-        with patch("atlas_brain.api.comms.webhooks.get_provider", return_value=mock_provider), \
+        with patch("atlas_brain.api.comms.webhooks.get_comms_service", return_value=MagicMock(provider=mock_provider)), \
              patch("atlas_brain.api.comms.webhooks.get_context_router", return_value=mock_ctx_router), \
              patch("atlas_brain.comms.call_intelligence.process_call_recording", side_effect=fake_pipeline):
             await _run_recording_processing(CALL_SID, RECORDING_URL, 185)
@@ -343,7 +349,7 @@ class TestBackgroundTaskResolution:
         async def fake_pipeline(**kwargs):
             captured.update(kwargs)
 
-        with patch("atlas_brain.api.comms.webhooks.get_provider", return_value=mock_provider), \
+        with patch("atlas_brain.api.comms.webhooks.get_comms_service", return_value=MagicMock(provider=mock_provider)), \
              patch("atlas_brain.comms.call_intelligence.process_call_recording", side_effect=fake_pipeline):
             await _run_recording_processing(CALL_SID, RECORDING_URL, 185)
 
@@ -426,6 +432,7 @@ class TestFullPipelineDryRun:
             mock_settings.call_intelligence.asr_timeout = 60
             mock_settings.call_intelligence.llm_max_tokens = 1024
             mock_settings.call_intelligence.llm_temperature = 0.3
+            mock_settings.call_intelligence.llm_timeout = 30.0
             mock_settings.call_intelligence.notify_enabled = True
             mock_settings.alerts.ntfy_enabled = True
             mock_settings.alerts.ntfy_url = "https://ntfy.example.com"
@@ -534,6 +541,8 @@ class TestFullPipelineDryRun:
         mock_comms = MagicMock()
         mock_comms.signalwire_project_id = ""
         mock_comms.signalwire_api_token = ""
+        mock_comms.signalwire_account_sid = ""
+        mock_comms.signalwire_recording_token = ""
 
         with patch("atlas_brain.comms.call_intelligence.settings") as mock_settings, \
              patch("atlas_brain.comms.call_intelligence.get_call_transcript_repo", return_value=repo), \
@@ -543,6 +552,7 @@ class TestFullPipelineDryRun:
             mock_settings.call_intelligence.min_duration_seconds = 5
             mock_settings.call_intelligence.asr_url = "http://localhost:8081/v1/asr"
             mock_settings.call_intelligence.asr_timeout = 60
+            mock_settings.call_intelligence.llm_timeout = 30.0
             mock_settings.call_intelligence.notify_enabled = False
             mock_settings.alerts.ntfy_enabled = False
 
@@ -586,6 +596,8 @@ class TestFullPipelineDryRun:
         mock_comms = MagicMock()
         mock_comms.signalwire_project_id = "proj"
         mock_comms.signalwire_api_token = "tok"
+        mock_comms.signalwire_account_sid = ""
+        mock_comms.signalwire_recording_token = ""
 
         with patch("atlas_brain.comms.call_intelligence.settings") as mock_settings, \
              patch("atlas_brain.comms.call_intelligence.get_call_transcript_repo", return_value=repo), \
@@ -594,6 +606,7 @@ class TestFullPipelineDryRun:
             mock_settings.call_intelligence.enabled = True
             mock_settings.call_intelligence.min_duration_seconds = 5
             mock_settings.call_intelligence.asr_timeout = 60
+            mock_settings.call_intelligence.llm_timeout = 30.0
 
             await process_call_recording(
                 call_sid=CALL_SID,

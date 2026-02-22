@@ -42,6 +42,16 @@ def _make_business_context():
     return ctx
 
 
+def _mock_comms(project_id="", api_token=""):
+    """Create a mock comms_settings with all required SignalWire attributes."""
+    mock = MagicMock()
+    mock.signalwire_project_id = project_id
+    mock.signalwire_api_token = api_token
+    mock.signalwire_account_sid = ""
+    mock.signalwire_recording_token = ""
+    return mock
+
+
 def _mock_httpx_client(response=None, side_effect=None):
     """Create a mock httpx.AsyncClient context manager."""
     mock_client = AsyncMock()
@@ -68,9 +78,7 @@ class TestDownloadRecording:
         mock_resp.raise_for_status = MagicMock()
         mock_client = _mock_httpx_client(response=mock_resp)
 
-        mock_comms = MagicMock()
-        mock_comms.signalwire_project_id = "proj-123"
-        mock_comms.signalwire_api_token = "token-456"
+        mock_comms = _mock_comms("proj-123", "token-456")
 
         with patch("atlas_brain.comms.call_intelligence.httpx.AsyncClient", return_value=mock_client), \
              patch("atlas_brain.comms.call_intelligence.comms_settings", mock_comms, create=True), \
@@ -89,9 +97,7 @@ class TestDownloadRecording:
         mock_resp.raise_for_status = MagicMock()
         mock_client = _mock_httpx_client(response=mock_resp)
 
-        mock_comms = MagicMock()
-        mock_comms.signalwire_project_id = ""
-        mock_comms.signalwire_api_token = ""
+        mock_comms = _mock_comms()
 
         with patch("atlas_brain.comms.call_intelligence.httpx.AsyncClient", return_value=mock_client), \
              patch.dict("sys.modules", {"atlas_brain.comms": MagicMock(comms_settings=mock_comms)}):
@@ -107,9 +113,7 @@ class TestDownloadRecording:
         mock_resp.raise_for_status = MagicMock()
         mock_client = _mock_httpx_client(response=mock_resp)
 
-        mock_comms = MagicMock()
-        mock_comms.signalwire_project_id = ""
-        mock_comms.signalwire_api_token = ""
+        mock_comms = _mock_comms()
 
         with patch("atlas_brain.comms.call_intelligence.httpx.AsyncClient", return_value=mock_client), \
              patch.dict("sys.modules", {"atlas_brain.comms": MagicMock(comms_settings=mock_comms)}):
@@ -122,9 +126,7 @@ class TestDownloadRecording:
     async def test_download_failure_raises(self):
         mock_client = _mock_httpx_client(side_effect=httpx.ConnectError("refused"))
 
-        mock_comms = MagicMock()
-        mock_comms.signalwire_project_id = ""
-        mock_comms.signalwire_api_token = ""
+        mock_comms = _mock_comms()
 
         with patch("atlas_brain.comms.call_intelligence.httpx.AsyncClient", return_value=mock_client), \
              patch.dict("sys.modules", {"atlas_brain.comms": MagicMock(comms_settings=mock_comms)}):
@@ -439,9 +441,7 @@ class TestPipeline:
         mock_llm = MagicMock()
         mock_llm.chat.return_value = llm_response
 
-        mock_comms = MagicMock()
-        mock_comms.signalwire_project_id = "proj"
-        mock_comms.signalwire_api_token = "tok"
+        mock_comms = _mock_comms("proj", "tok")
 
         with patch("atlas_brain.comms.call_intelligence.settings") as mock_settings, \
              patch("atlas_brain.comms.call_intelligence.get_call_transcript_repo", return_value=mock_repo), \
@@ -455,6 +455,7 @@ class TestPipeline:
             mock_settings.call_intelligence.asr_timeout = 60
             mock_settings.call_intelligence.llm_max_tokens = 1024
             mock_settings.call_intelligence.llm_temperature = 0.3
+            mock_settings.call_intelligence.llm_timeout = 30.0
             mock_settings.call_intelligence.notify_enabled = False
             mock_settings.alerts.ntfy_enabled = False
             mock_skills.return_value.get.return_value = None
@@ -476,9 +477,7 @@ class TestPipeline:
 
         mock_client = _mock_httpx_client(side_effect=httpx.ConnectError("refused"))
 
-        mock_comms = MagicMock()
-        mock_comms.signalwire_project_id = ""
-        mock_comms.signalwire_api_token = ""
+        mock_comms = _mock_comms()
 
         with patch("atlas_brain.comms.call_intelligence.settings") as mock_settings, \
              patch("atlas_brain.comms.call_intelligence.get_call_transcript_repo", return_value=mock_repo), \
@@ -518,9 +517,7 @@ class TestPipeline:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        mock_comms = MagicMock()
-        mock_comms.signalwire_project_id = ""
-        mock_comms.signalwire_api_token = ""
+        mock_comms = _mock_comms()
 
         with patch("atlas_brain.comms.call_intelligence.settings") as mock_settings, \
              patch("atlas_brain.comms.call_intelligence.get_call_transcript_repo", return_value=mock_repo), \
@@ -562,9 +559,7 @@ class TestPipeline:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        mock_comms = MagicMock()
-        mock_comms.signalwire_project_id = ""
-        mock_comms.signalwire_api_token = ""
+        mock_comms = _mock_comms()
 
         with patch("atlas_brain.comms.call_intelligence.settings") as mock_settings, \
              patch("atlas_brain.comms.call_intelligence.get_call_transcript_repo", return_value=mock_repo), \
