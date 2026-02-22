@@ -14,12 +14,17 @@ POST /comms/call-actions/{transcript_id}/discard      -> discard draft (ntfy cle
 import asyncio
 import logging
 import re
+from datetime import datetime, timedelta
+from typing import Optional
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
+import dateparser
 import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from ...comms.context import get_context_router
 from ...config import settings
 from ...services.llm_router import get_draft_llm, get_triage_llm
 from ...services.protocols import Message
@@ -38,6 +43,51 @@ def _ntfy_url() -> str:
 def _api_url() -> str:
     from ...comms import comms_settings
     return comms_settings.webhook_base_url.rstrip("/")
+
+
+def _get_business_name(record: dict) -> str:
+    """Look up the business name from the transcript's context ID."""
+    ctx_id = record.get("business_context_id") or ""
+    if ctx_id:
+        ctx = get_context_router().get_context(ctx_id)
+        if ctx and ctx.name:
+            return ctx.name
+    return "Your Business"
+
+
+def _parse_event_datetime(date_str: str, time_str: str, tz_name: str = "America/Chicago") -> datetime:
+    """Parse extracted date/time strings into a timezone-aware datetime.
+
+    Uses dateparser for natural language support (relative dates, time-of-day words).
+    Falls back to tomorrow at 9 AM in the given timezone if strings cannot be parsed.
+    """
+    tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    fallback = now.replace(hour=9, minute=0, second=0, microsecond=0) + timedelta(days=1)
+
+    dp_settings = {
+        "TIMEZONE": tz_name,
+        "RETURN_AS_TIMEZONE_AWARE": True,
+        "PREFER_DATES_FROM": "future",
+        "PREFER_DAY_OF_MONTH": "first",
+    }
+
+    combined = f"{date_str} {time_str}".strip()
+    if combined:
+        result = dateparser.parse(combined, settings=dp_settings)
+        if result:
+            return result
+
+    if date_str:
+        result = dateparser.parse(date_str, settings=dp_settings)
+        if result:
+            if time_str:
+                t = dateparser.parse(time_str, settings=dp_settings)
+                if t:
+                    return result.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
+            return result
+
+    return fallback
 
 
 def _build_customer_info(data: dict, from_number: str) -> str:
@@ -213,10 +263,14 @@ async def book_appointment(transcript_id: UUID):
     frequency = data.get("frequency") or ""
 
     try:
-        from ...tools.calendar import get_calendar_tool
-        cal = get_calendar_tool()
+        from ...tools.calendar import calendar_tool
 
-        title = f"Estimate: {customer}"
+        biz_name = _get_business_name(record)
+        ctx_id = record.get("business_context_id") or ""
+        ctx = get_context_router().get_context(ctx_id) if ctx_id else None
+        calendar_id = (ctx.scheduling.calendar_id if ctx else None) or None
+
+        summary = f"Estimate: {customer}"
         desc_lines = [
             f"Customer: {customer}",
             f"Phone: {phone}",
@@ -229,25 +283,29 @@ async def book_appointment(transcript_id: UUID):
         if frequency:
             desc_lines.append(f"Frequency: {frequency.replace('_', ' ').title()}")
         if date_str or time_str:
-            desc_lines.append(f"Requested: {date_str} {time_str}".strip())
+            desc_lines.append(f"Requested: {(date_str + ' ' + time_str).strip()}")
         description = "\n".join(desc_lines)
 
-        result = await cal.create_event(
-            title=title,
+        tz_name = ctx.hours.timezone if (ctx and ctx.hours) else "America/Chicago"
+        start_dt = _parse_event_datetime(date_str, time_str, tz_name)
+        end_dt = start_dt + timedelta(hours=1)
+
+        result = await calendar_tool.create_event(
+            summary=summary,
+            start=start_dt,
+            end=end_dt,
+            location=address or None,
             description=description,
-            start=f"{date_str} {time_str}".strip() or "TBD",
-            calendar_hint="effingham_maids",
+            calendar_id=calendar_id,
         )
         logger.info("Calendar event created for transcript %s: %s", transcript_id, result)
 
         try:
-            from ...comms import EFFINGHAM_MAIDS_CONTEXT
-            biz_name = EFFINGHAM_MAIDS_CONTEXT.name
             await _notify_booking_confirmed(transcript_id, record, biz_name)
         except Exception as _notify_err:
             logger.warning("Booking confirmed ntfy failed for %s: %s", transcript_id, _notify_err)
 
-        return JSONResponse({"status": "ok", "event": result})
+        return JSONResponse({"status": "ok", "event": result.data if result.success else result.message})
 
     except Exception as e:
         logger.error("Failed to book appointment for %s: %s", transcript_id, e)
@@ -267,17 +325,18 @@ async def send_sms(transcript_id: UUID):
     customer = data.get("customer_name") or "there"
     date_str = data.get("preferred_date", "")
     time_str = data.get("preferred_time", "")
-    appt = f" for {date_str} {time_str}".strip() if (date_str or time_str) else ""
+    appt = f" for {(date_str + ' ' + time_str).strip()}" if (date_str or time_str) else ""
 
+    biz_name = _get_business_name(record)
     body = (
-        f"Hi {customer}, this is Effingham Office Maids following up on your call{appt}. "
+        f"Hi {customer}, this is {biz_name} following up on your call{appt}. "
         f"We'll be in touch shortly to confirm details. Reply STOP to opt out."
     )
 
     try:
         from ...comms import get_comms_service
         svc = get_comms_service()
-        from_number = "+16183683696"
+        from_number = record.get("to_number", "")
         msg = await svc.provider.send_sms(
             to_number=to_number,
             from_number=from_number,
@@ -320,8 +379,7 @@ async def draft_email(transcript_id: UUID):
     data = record.get("extracted_data") or {}
     customer = data.get("customer_name") or "Customer"
 
-    from ...comms import EFFINGHAM_MAIDS_CONTEXT
-    biz_name = EFFINGHAM_MAIDS_CONTEXT.name
+    biz_name = _get_business_name(record)
 
     try:
         content = await _generate_draft("email", record, biz_name)
@@ -347,8 +405,7 @@ async def draft_sms_confirmation(transcript_id: UUID):
     data = record.get("extracted_data") or {}
     customer = data.get("customer_name") or "Customer"
 
-    from ...comms import EFFINGHAM_MAIDS_CONTEXT
-    biz_name = EFFINGHAM_MAIDS_CONTEXT.name
+    biz_name = _get_business_name(record)
 
     try:
         content = await _generate_draft("sms", record, biz_name)
@@ -384,9 +441,11 @@ async def send_drafted_email(transcript_id: UUID):
     subject = "Following up on your call"
     body = content
     lines = content.split("\n")
-    if lines and lines[0].upper().startswith("SUBJECT:"):
-        subject = lines[0][8:].strip()
-        body = "\n".join(lines[1:]).strip()
+    first_nonempty = next((l for l in lines if l.strip()), "")
+    if first_nonempty.upper().startswith("SUBJECT:"):
+        subject = first_nonempty[8:].strip()
+        idx = lines.index(first_nonempty)
+        body = "\n".join(lines[idx + 1:]).strip()
 
     try:
         from ...comms import get_email_service, EmailMessage

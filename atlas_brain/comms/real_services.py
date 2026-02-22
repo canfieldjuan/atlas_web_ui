@@ -7,6 +7,7 @@ Connects to:
 - Google Calendar for scheduling
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
@@ -61,7 +62,10 @@ class ResendEmailService(EmailService):
             if message.reply_to:
                 params["reply_to"] = message.reply_to
 
-            response = client.Emails.send(params)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None, lambda: client.Emails.send(params)
+            )
             logger.info("Email sent: %s to %s", response.get("id"), message.to)
             return True
 

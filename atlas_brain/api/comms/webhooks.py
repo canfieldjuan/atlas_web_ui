@@ -11,6 +11,7 @@ import logging
 import re
 import time
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Form, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, JSONResponse
@@ -39,6 +40,106 @@ def laml_response(content: str) -> Response:
         content=content,
         media_type="application/xml",
     )
+
+
+def _normalize_to_e164(raw_to: str) -> str:
+    """Normalize SIP URI or phone input into E.164 when possible."""
+    if not raw_to:
+        return ""
+
+    # Strip SIP URI envelope first (sip:user@domain -> user)
+    clean = re.sub(r"^sip:", "", raw_to, flags=re.IGNORECASE)
+    clean = re.sub(r"@.*", "", clean)
+
+    # Keep digits and optional leading plus
+    had_plus = clean.strip().startswith("+")
+    digits = re.sub(r"\D", "", clean)
+
+    if not digits:
+        return clean.strip()
+
+    if had_plus:
+        return f"+{digits}"
+
+    # US defaults
+    if len(digits) == 10:
+        return f"+1{digits}"
+    if len(digits) == 11 and digits.startswith("1"):
+        return f"+{digits}"
+
+    # Fallback: prefix plus for international/non-standard lengths
+    return f"+{digits}"
+
+
+def _fallback_outbound_caller_id() -> str:
+    """Best-effort E.164 caller ID for outbound PSTN bridging."""
+    try:
+        context_router = get_context_router()
+        for ctx in context_router.list_contexts():
+            for number in getattr(ctx, "phone_numbers", []) or []:
+                normalized = _normalize_to_e164(number)
+                if normalized.startswith("+"):
+                    return normalized
+    except Exception:
+        pass
+    return ""
+
+
+# Track which calls already have recording started (avoid duplicates)
+_recording_started: set[str] = set()
+
+
+async def _start_recording_for_call(call_sid: str):
+    """Start recording via REST API, retrying until the call is active.
+
+    Tries at 2s, 5s, 10s after the webhook. The first success wins;
+    the /status handler may also start recording on in-progress — the
+    _recording_started set prevents duplicates.
+    """
+    for delay in (2, 5, 10):
+        if call_sid in _recording_started:
+            return  # Already started by /status handler
+        await asyncio.sleep(delay)
+        if call_sid in _recording_started:
+            return
+        try:
+            provider = get_comms_service().provider
+            # Don't attempt recording if call already ended/failed.
+            call = await provider.get_call(call_sid)
+            if call is not None:
+                state_value = getattr(getattr(call, "state", None), "value", "")
+                if state_value in ("failed", "ended"):
+                    logger.info(
+                        "Skipping recording for %s because call state is %s",
+                        call_sid,
+                        state_value,
+                    )
+                    return
+
+            cb_url = (
+                f"{comms_settings.webhook_base_url}"
+                "/api/v1/comms/voice/recording-status"
+            )
+            await provider.start_recording(
+                call_sid=call_sid,
+                recording_status_callback=cb_url,
+            )
+            _recording_started.add(call_sid)
+            logger.info("Recording started for %s (background, delay=%ds)", call_sid, delay)
+            return
+        except Exception as e:
+            logger.warning("Recording attempt for %s at %ds failed: %s", call_sid, delay, e)
+            # SignalWire's Twilio-compatible SDK can raise JSON parse errors
+            # even when the REST API returned 200. Treat that specific case as
+            # success to avoid duplicate recording attempts.
+            if "Expecting value" in str(e):
+                _recording_started.add(call_sid)
+                logger.info(
+                    "Recording likely started for %s (HTTP 200 but SDK parse error), stopping retries",
+                    call_sid,
+                )
+                return
+    logger.warning("All recording attempts failed for %s (call may have ended)", call_sid)
 
 
 async def prewarm_llm():
@@ -202,34 +303,25 @@ async def handle_inbound_call(request: Request):
 
         if use_laml:
             # If a forward number is configured, skip AI and dial directly.
-            # SignalWire records both legs then fires the recording-status webhook.
             if comms_settings.forward_to_number:
                 logger.info(
                     "Forwarding call %s to %s",
                     call_id,
                     comms_settings.forward_to_number,
                 )
-                # Build <Dial> attributes
-                recording_url = (
-                    f"{comms_settings.webhook_base_url}"
-                    "/api/v1/comms/voice/recording-status"
-                )
-                dial_attrs = 'timeout="30" answerOnBridge="true"'
+                # Recording via REST API. The record= attr on <Dial> is
+                # broken on SignalWire. We use two paths:
+                # 1) Background task retries at 2s/5s/10s
+                # 2) /status handler fires on in-progress
+                # Whichever succeeds first wins (_recording_started guard).
                 if comms_settings.record_calls:
-                    dial_attrs += (
-                        ' record="record-from-answer"'
-                        f' recordingStatusCallback="{recording_url}"'
-                        ' recordingStatusCallbackEvent="completed"'
+                    asyncio.create_task(
+                        _start_recording_for_call(call_id)
                     )
-                whisper_url = (
-                    f"{comms_settings.webhook_base_url}"
-                    f"/api/v1/comms/voice/whisper"
-                    f"?from={from_number}&context={context.name}"
-                )
                 return laml_response(f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Dial {dial_attrs}>
-        <Number url="{whisper_url}">{comms_settings.forward_to_number}</Number>
+    <Dial timeout="30" answerOnBridge="true">
+        {comms_settings.forward_to_number}
     </Dial>
 </Response>""")
 
@@ -484,6 +576,143 @@ async def handle_conversation(request: Request):
         })
 
 
+@router.api_route("/sip-outbound", methods=["GET", "POST"])
+async def handle_sip_outbound(request: Request):
+    """
+    Handle outbound calls from SIP endpoint (Zoiper).
+
+    SignalWire hits this webhook when the SIP client dials a number.
+    Returns LaML to connect the call to the PSTN destination, with
+    optional recording.
+    """
+    raw_body = await request.body()
+    logger.info("SIP outbound webhook: %s", raw_body.decode()[:500])
+
+    # SignalWire can send SIP endpoint webhook as GET query params.
+    if request.method == "GET":
+        query = request.query_params
+        call_id = query.get("CallSid", "unknown")
+        to_number = query.get("To", "")
+        from_number = query.get("From", "")
+    # Parse form data or JSON for POST
+    elif is_laml_request(request):
+        form = await request.form()
+        call_id = form.get("CallSid", "unknown")
+        to_number = form.get("To", "")
+        from_number = form.get("From", "")
+    else:
+        body = json.loads(raw_body) if raw_body else {}
+        call_data = body.get("call", body)
+        call_id = call_data.get("call_id") or call_data.get("CallSid", "unknown")
+        to_number = call_data.get("to_number") or call_data.get("To", "")
+        from_number = call_data.get("from_number") or call_data.get("From", "")
+
+    # Clean SIP URI/phone to E.164: sip:8135855363@domain -> +18135855363
+    clean = _normalize_to_e164(to_number)
+
+    if not clean or not clean.startswith("+"):
+        logger.warning(
+            "SIP outbound %s invalid destination after normalization: raw=%s normalized=%s",
+            call_id,
+            to_number,
+            clean,
+        )
+        return laml_response("""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Joanna">Sorry, that number format is invalid.</Say>
+    <Hangup />
+</Response>""")
+
+    logger.info("SIP outbound: %s dialing %s -> %s (from %s)", call_id, to_number, clean, from_number)
+
+    # Track SIP-originated parent leg so /status and recording pipeline can
+    # resolve context and numbers for this call.
+    try:
+        provider = get_comms_service().provider
+        await provider.handle_incoming_call(
+            call_sid=call_id,
+            from_number=from_number,
+            to_number=clean or to_number,
+        )
+    except Exception as e:
+        logger.debug("Could not pre-track SIP outbound parent leg %s: %s", call_id, e)
+
+    # Do not start recording here. SIP outbound can fail fast before bridge,
+    # and eager recording attempts create noisy false-positive "started" logs.
+    # Recording is started from /status when the call is in-progress.
+
+    dial_action = f"{comms_settings.webhook_base_url}/api/v1/comms/voice/dial-status"
+
+    # For SIP-originated calls, provider default caller ID may remain a SIP URI,
+    # which many PSTN routes reject before creating a dial leg. Prefer E.164.
+    caller_id_attr = ""
+    if from_number and not from_number.lower().startswith("sip:"):
+        caller_id_attr = f' callerId="{from_number}"'
+    else:
+        fallback_caller_id = _fallback_outbound_caller_id()
+        if fallback_caller_id:
+            caller_id_attr = f' callerId="{fallback_caller_id}"'
+
+    logger.info(
+        "SIP outbound %s dial config: target=%s caller_id_attr=%s",
+        call_id,
+        clean,
+        caller_id_attr or "<provider-default>",
+    )
+
+    return laml_response(f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Dial timeout="60" answerOnBridge="true"{caller_id_attr} action="{dial_action}" method="POST">
+        <Number>{clean}</Number>
+    </Dial>
+</Response>""")
+
+
+@router.post("/sip-outbound-swml")
+async def handle_sip_outbound_swml(request: Request):
+    """
+    Handle outbound SIP calls via SWML execute.
+
+    Called by SWML execute with call variables as params.
+    Returns SWML JSON with connect to the cleaned PSTN number
+    and record_call for the intelligence pipeline.
+    """
+    raw_body = await request.body()
+    logger.info("SIP outbound SWML: %s", raw_body.decode()[:500])
+
+    try:
+        body = json.loads(raw_body)
+    except Exception:
+        body = {}
+
+    # SWML execute sends the full call context under "call"
+    call_data = body.get("call", {})
+    call_to = call_data.get("to") or body.get("call_to", "")
+    call_id = call_data.get("call_id") or body.get("call_id", "unknown")
+
+    # Clean SIP URI to E.164: sip:8135855363@domain -> +18135855363
+    import re
+    clean = re.sub(r'^sip:', '', call_to, flags=re.IGNORECASE)
+    clean = re.sub(r'@.*', '', clean)
+    if clean and not clean.startswith('+'):
+        clean = f'+1{clean}' if len(clean) == 10 else f'+{clean}'
+
+    logger.info("SIP outbound SWML: %s dialing %s -> %s", call_id, call_to, clean)
+
+    recording_url = (
+        f"{comms_settings.webhook_base_url}"
+        "/api/v1/comms/voice/recording-status"
+    )
+
+    # Return SWML that just sets the cleaned number as a variable.
+    # The calling SWML script uses %{dest_number} in its connect verb.
+    sections = {"main": [
+        {"set": {"dest_number": clean}},
+    ]}
+
+    return swml_response(sections)
+
+
 @router.post("/outbound")
 async def handle_outbound_call(
     request: Request,
@@ -551,6 +780,17 @@ async def handle_dial_status(
         CallSid, DialCallStatus, DialCallSid, DialCallDuration,
     )
 
+    # Capture full provider payload for troubleshooting SIP leg failures.
+    try:
+        form = await request.form()
+        payload = dict(form)
+        if DialCallStatus in ("failed", "busy", "no-answer", "canceled"):
+            logger.warning("Dial failed payload for %s: %s", CallSid, payload)
+        else:
+            logger.info("Dial payload for %s: %s", CallSid, payload)
+    except Exception as e:
+        logger.debug("Unable to parse dial-status payload for %s: %s", CallSid, e)
+
     if DialCallStatus == "completed" and comms_settings.record_calls:
         try:
             cb_url = (
@@ -575,19 +815,90 @@ async def handle_call_status(
     CallSid: str = Form(...),
     CallStatus: str = Form(...),
     Duration: Optional[str] = Form(None),
+    ParentCallSid: Optional[str] = Form(None),
+    To: Optional[str] = Form(None),
+    From: Optional[str] = Form(None),
+    Direction: Optional[str] = Form(None),
 ):
     """
     Handle call status updates.
 
-    Called when call state changes (ringing, answered, completed, etc.)
+    Called when call state changes (ringing, in-progress, completed, etc.).
+    Starts recording via REST API when the call goes in-progress, since
+    the record= attribute on <Dial> is broken on SignalWire.
     """
-    logger.info("Call %s status: %s (duration: %s)", CallSid, CallStatus, Duration)
+    logger.info(
+        "Call %s status: %s (duration: %s, parent: %s, direction: %s)",
+        CallSid,
+        CallStatus,
+        Duration,
+        ParentCallSid,
+        Direction,
+    )
+
+    # Capture provider-specific failure hints for SIP debugging.
+    if CallStatus in ("failed", "busy", "no-answer", "canceled"):
+        try:
+            form = await request.form()
+            failure_details = {
+                "ErrorCode": form.get("ErrorCode"),
+                "ErrorMessage": form.get("ErrorMessage"),
+                "SipResponseCode": form.get("SipResponseCode"),
+                "SipErrorCode": form.get("SipErrorCode"),
+                "DialCallStatus": form.get("DialCallStatus"),
+                "DialCallSid": form.get("DialCallSid"),
+                "ParentCallSid": form.get("ParentCallSid"),
+                "To": form.get("To"),
+                "From": form.get("From"),
+            }
+            logger.warning("Call %s failed status details: %s", CallSid, failure_details)
+        except Exception as e:
+            logger.debug("Unable to parse status failure details for %s: %s", CallSid, e)
 
     try:
         provider = get_comms_service().provider
+
+        # For <Dial> scenarios SignalWire sends child-leg statuses with a
+        # different CallSid. Ensure child leg is tracked before status update.
+        # This avoids "unknown call" warnings and preserves recording context.
+        existing = await provider.get_call(CallSid)
+        if existing is None:
+            parent_call = await provider.get_call(ParentCallSid) if ParentCallSid else None
+            from_number = parent_call.from_number if parent_call else (From or "")
+            to_number = parent_call.to_number if parent_call else (To or "")
+            child = await provider.handle_incoming_call(
+                call_sid=CallSid,
+                from_number=from_number,
+                to_number=to_number,
+            )
+            if parent_call and parent_call.context_id:
+                child.context_id = parent_call.context_id
+
         await provider.handle_call_status(CallSid, CallStatus)
     except Exception as e:
         logger.error("Error handling call status: %s", e)
+
+    # Start recording as soon as the call is active (fast path)
+    if CallStatus == "in-progress" and comms_settings.record_calls:
+        if CallSid not in _recording_started:
+            try:
+                provider = get_comms_service().provider
+                cb_url = (
+                    f"{comms_settings.webhook_base_url}"
+                    "/api/v1/comms/voice/recording-status"
+                )
+                await provider.start_recording(
+                    call_sid=CallSid,
+                    recording_status_callback=cb_url,
+                )
+                _recording_started.add(CallSid)
+                logger.info("Recording started for %s on in-progress", CallSid)
+            except Exception as e:
+                logger.warning("Failed to start recording for %s: %s", CallSid, e)
+
+    # Clean up tracking when call ends
+    if CallStatus in ("completed", "failed", "canceled", "busy", "no-answer"):
+        _recording_started.discard(CallSid)
 
     return Response(status_code=204)
 
@@ -692,26 +1003,79 @@ async def handle_voicemail(
 
 
 @router.post("/recording-status")
-async def handle_recording_status(
-    request: Request,
-    CallSid: str = Form(...),
-    RecordingSid: str = Form(...),
-    RecordingStatus: str = Form(...),
-    RecordingUrl: Optional[str] = Form(None),
-    RecordingDuration: Optional[str] = Form(None),
-):
+async def handle_recording_status(request: Request):
     """
     Handle recording status updates.
 
     Updates the voicemail message metadata with recording status
     (completed, failed, etc.) and final recording URL.
+
+    SignalWire field names vary between REST-initiated and SWML-initiated
+    recordings, so we parse form data dynamically.
     """
+    # SignalWire may send form-encoded or JSON depending on how
+    # the recording was initiated (REST API vs SWML record_call).
+    raw_body = await request.body()
+    content_type = request.headers.get("content-type", "")
+    logger.info("Recording status webhook content-type=%s body=%s", content_type, raw_body.decode()[:500])
+
+    params: dict = {}
+    if "application/json" in content_type:
+        try:
+            params = json.loads(raw_body)
+        except Exception:
+            pass
+    elif "application/x-www-form-urlencoded" in content_type:
+        from urllib.parse import parse_qs
+        parsed = parse_qs(raw_body.decode())
+        params = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+    else:
+        # Try JSON first, then form
+        try:
+            params = json.loads(raw_body)
+        except Exception:
+            from urllib.parse import parse_qs
+            try:
+                parsed = parse_qs(raw_body.decode())
+                params = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+            except Exception:
+                pass
+
+    # SWML record_call sends JSON with fields nested under "params".
+    # REST-initiated recordings send form-encoded with top-level fields.
+    inner = params.get("params", {})
+    merged = {**params, **inner}  # inner overrides top-level
+
+    logger.info("Recording status merged: %s", {
+        k: v for k, v in merged.items() if k != "params"
+    })
+
+    # Normalize field names across both formats
+    CallSid = (merged.get("CallSid") or merged.get("call_sid")
+               or merged.get("call_id") or "unknown")
+    RecordingSid = (merged.get("RecordingSid") or merged.get("recording_sid")
+                    or merged.get("recording_id") or "unknown")
+    RecordingUrl = (merged.get("RecordingUrl") or merged.get("recording_url")
+                    or merged.get("url"))
+    RecordingDuration = (merged.get("RecordingDuration")
+                         or merged.get("recording_duration")
+                         or merged.get("duration"))
+
+    # SWML uses state: "recording"/"finished"; REST uses RecordingStatus: "completed"
+    raw_state = (merged.get("RecordingStatus") or merged.get("recording_status")
+                 or merged.get("state") or "")
+    # Map SWML state names to the ones our pipeline expects
+    RecordingStatus = {"finished": "completed", "recording": "in-progress"}.get(
+        raw_state, raw_state
+    )
+
     logger.info(
-        "Recording %s for call %s: %s (url=%s)",
+        "Recording %s for call %s: %s (url=%s, duration=%s)",
         RecordingSid,
         CallSid,
         RecordingStatus,
         RecordingUrl,
+        RecordingDuration,
     )
 
     if RecordingStatus == "completed" and RecordingUrl:
@@ -744,6 +1108,29 @@ async def handle_recording_status(
         )
 
     return Response(status_code=204)
+
+
+@router.post("/swml-debug")
+async def swml_debug(request: Request):
+    """
+    Debug endpoint called from SWML request step.
+    Logs all variables SignalWire injects into the SWML execution context.
+    Returns 200 with no body so SWML continues to the next step.
+    """
+    try:
+        body = await request.body()
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            import json as _json
+            params = _json.loads(body)
+        else:
+            from urllib.parse import parse_qs
+            parsed = parse_qs(body.decode("utf-8", errors="replace"))
+            params = {k: v[0] if len(v) == 1 else v for k, v in parsed.items()}
+        logger.info("SWML debug variables: %s", params)
+    except Exception as e:
+        logger.warning("SWML debug parse error: %s", e)
+    return Response(status_code=200)
 
 
 @router.websocket("/stream/{call_sid}")
@@ -938,6 +1325,10 @@ def _spawn_recording_processing(
     call_sid: str, recording_url: str, duration: int,
 ):
     """Spawn background task to process a completed call recording."""
+    logger.info(
+        "Spawning call intelligence pipeline: call=%s url=%s duration=%d",
+        call_sid, recording_url, duration,
+    )
     asyncio.create_task(_run_recording_processing(
         call_sid, recording_url, duration,
     ))

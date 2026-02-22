@@ -223,8 +223,20 @@ class SignalWireProvider(TelephonyProvider):
             kwargs["recording_status_callback"] = recording_status_callback
             kwargs["recording_status_callback_event"] = "completed"
 
-        self._client.calls(call_sid).recordings.create(**kwargs)
-        logger.info("Started recording for call %s", call_sid)
+        try:
+            self._client.calls(call_sid).recordings.create(**kwargs)
+            logger.info("Started recording for call %s", call_sid)
+        except Exception as e:
+            # SignalWire's Twilio-compatible SDK may throw a JSON decode error
+            # even when the REST API returned HTTP 200.
+            if "Expecting value" in str(e):
+                logger.warning(
+                    "Recording create for %s returned SDK parse error; treating as started: %s",
+                    call_sid,
+                    e,
+                )
+                return
+            raise
 
     async def hangup(self, call: Call) -> bool:
         """End an active call."""

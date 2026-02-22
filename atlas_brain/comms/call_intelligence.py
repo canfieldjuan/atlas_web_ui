@@ -46,12 +46,17 @@ async def process_call_recording(
     """
     cfg = settings.call_intelligence
 
+    logger.info(
+        "Call intelligence pipeline started: call=%s url=%s from=%s to=%s duration=%ds enabled=%s",
+        call_sid, recording_url, from_number, to_number, duration_seconds, cfg.enabled,
+    )
+
     if not cfg.enabled:
-        logger.debug("Call intelligence disabled, skipping %s", call_sid)
+        logger.info("Call intelligence disabled, skipping %s", call_sid)
         return
 
     if duration_seconds < cfg.min_duration_seconds:
-        logger.debug(
+        logger.info(
             "Call %s too short (%ds < %ds), skipping",
             call_sid, duration_seconds, cfg.min_duration_seconds,
         )
@@ -69,16 +74,18 @@ async def process_call_recording(
             duration=duration_seconds,
         )
         transcript_id = record["id"]
+        logger.info("Step 1/5 OK: DB record created id=%s for call %s", transcript_id, call_sid)
     except Exception as e:
-        logger.warning("Call intelligence: failed to create record for %s: %s", call_sid, e)
+        logger.error("Step 1/5 FAIL: DB record creation for %s: %s", call_sid, e)
         return
 
     # Step 2: Download recording from SignalWire
     try:
         await repo.update_status(transcript_id, "transcribing")
         audio_bytes = await _download_recording(recording_url)
+        logger.info("Step 2/5 OK: Downloaded recording %d bytes for %s", len(audio_bytes), call_sid)
     except Exception as e:
-        logger.warning("Call intelligence: download failed for %s: %s", call_sid, e)
+        logger.error("Step 2/5 FAIL: Download for %s: %s", call_sid, e)
         await _safe_update_status(repo, transcript_id, "error", f"Download: {e}")
         return
 
@@ -86,7 +93,7 @@ async def process_call_recording(
     try:
         transcript = await _transcribe_audio(audio_bytes)
         if not transcript:
-            logger.info("Call intelligence: empty transcript for %s", call_sid)
+            logger.info("Step 3/5: Empty transcript for %s, marking ready", call_sid)
             await repo.update_transcript(transcript_id, "")
             await repo.update_extraction(
                 transcript_id,
@@ -97,8 +104,9 @@ async def process_call_recording(
             await repo.update_status(transcript_id, "ready")
             return
         await repo.update_transcript(transcript_id, transcript)
+        logger.info("Step 3/5 OK: Transcribed %d chars for %s", len(transcript), call_sid)
     except Exception as e:
-        logger.warning("Call intelligence: transcription failed for %s: %s", call_sid, e)
+        logger.error("Step 3/5 FAIL: Transcription for %s: %s", call_sid, e)
         await _safe_update_status(repo, transcript_id, "error", f"Transcription: {e}")
         return
 
@@ -110,8 +118,12 @@ async def process_call_recording(
         )
         await repo.update_extraction(transcript_id, summary, extracted_data, proposed_actions)
         await repo.update_status(transcript_id, "ready")
+        logger.info(
+            "Step 4/5 OK: Extracted data for %s: summary=%s actions=%d",
+            call_sid, summary[:80], len(proposed_actions),
+        )
     except Exception as e:
-        logger.warning("Call intelligence: extraction failed for %s: %s", call_sid, e)
+        logger.error("Step 4/5 FAIL: Extraction for %s: %s", call_sid, e)
         await _safe_update_status(repo, transcript_id, "error", f"Extraction: {e}")
         return
 
@@ -123,8 +135,9 @@ async def process_call_recording(
             summary, extracted_data, proposed_actions,
             business_context,
         )
+        logger.info("Step 5/5 OK: Notification sent for %s", call_sid)
     except Exception as e:
-        logger.warning("Call intelligence: notification failed for %s: %s", call_sid, e)
+        logger.error("Step 5/5 FAIL: Notification for %s: %s", call_sid, e)
 
 
 async def _download_recording(recording_url: str) -> bytes:
@@ -141,16 +154,28 @@ async def _download_recording(recording_url: str) -> bytes:
         url = url.rstrip("/") + ".wav"
 
     auth = None
-    # Recording download requires the account UUID SID, not the PT-format project ID.
-    # Use signalwire_account_sid + signalwire_recording_token if set, otherwise fall back.
-    account_sid = comms_settings.signalwire_account_sid or comms_settings.signalwire_project_id
-    recording_token = comms_settings.signalwire_recording_token or comms_settings.signalwire_api_token
+    # REST-initiated recordings live under the Twilio-compatible API, which
+    # authenticates with project_id + api_token (the same creds the SDK uses).
+    # Fabric API credentials (account_sid + recording_token) are for a
+    # different API surface and will 401 on REST recording URLs.
+    account_sid = comms_settings.signalwire_project_id or comms_settings.signalwire_account_sid
+    recording_token = comms_settings.signalwire_api_token or comms_settings.signalwire_recording_token
     if account_sid and recording_token:
         auth = httpx.BasicAuth(account_sid, recording_token)
+    logger.info("Recording download: url=%s auth_user=%s", url, account_sid[:12] + "..." if account_sid else "none")
 
     cfg = settings.call_intelligence
     async with httpx.AsyncClient(timeout=cfg.asr_timeout, follow_redirects=True) as client:
         resp = await client.get(url, auth=auth)
+        if resp.status_code == 401 and auth:
+            # First credential set failed; try the other one.
+            alt_sid = comms_settings.signalwire_account_sid or ""
+            alt_tok = comms_settings.signalwire_recording_token or ""
+            if alt_sid and alt_tok and alt_sid != account_sid:
+                logger.info("Recording download 401, retrying with account_sid auth")
+                alt_auth = httpx.BasicAuth(alt_sid, alt_tok)
+                resp = await client.get(url, auth=alt_auth)
+        logger.info("Recording download response: status=%d size=%d", resp.status_code, len(resp.content))
         resp.raise_for_status()
         return resp.content
 
