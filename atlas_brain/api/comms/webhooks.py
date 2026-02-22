@@ -878,9 +878,13 @@ async def handle_call_status(
     except Exception as e:
         logger.error("Error handling call status: %s", e)
 
-    # Start recording as soon as the call is active (fast path)
+    # Start recording as soon as the call is active (fast path).
+    # Only record the parent leg -- child legs (dial-out) have a ParentCallSid
+    # and recording them would duplicate the pipeline run + ntfy notification.
     if CallStatus == "in-progress" and comms_settings.record_calls:
-        if CallSid not in _recording_started:
+        if ParentCallSid:
+            logger.debug("Skipping recording for child leg %s (parent=%s)", CallSid, ParentCallSid)
+        elif CallSid not in _recording_started:
             try:
                 provider = get_comms_service().provider
                 cb_url = (
