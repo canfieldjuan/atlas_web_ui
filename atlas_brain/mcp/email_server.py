@@ -1,20 +1,21 @@
 """
 Atlas Email MCP Server.
 
-Provider-agnostic MCP server for email operations backed by Gmail + Resend.
+Provider-agnostic MCP server for email operations.
 
-Sending:  Gmail preferred; Resend as fallback.
-Reading:  Gmail only (inbox, threads, search).
-History:  Atlas sent_emails DB table (all outbound email from Atlas).
+Sending:  CompositeEmailProvider — Gmail preferred, Resend fallback, or any
+          provider registered via get_email_provider().
+Reading:  Whichever provider supports it (currently Gmail).
+History:  Atlas sent_emails DB table (all outbound email sent through Atlas).
 
 Tools:
     send_email          — send a plain email
     send_estimate       — send a cleaning estimate confirmation (templated)
     send_proposal       — send a cleaning proposal (templated, auto-PDF)
-    list_inbox          — list Gmail inbox messages
-    get_message         — fetch a full Gmail message with body
-    search_inbox        — search Gmail with arbitrary query syntax
-    get_thread          — fetch a Gmail thread
+    list_inbox          — list inbox messages
+    get_message         — fetch a full message with body
+    search_inbox        — search inbox with arbitrary query syntax
+    get_thread          — fetch a thread
     list_sent_history   — query Atlas sent_emails history from the DB
 
 Run:
@@ -35,7 +36,8 @@ mcp = FastMCP(
     "atlas-email",
     instructions=(
         "Email MCP server for Atlas. "
-        "Handles sending (Gmail preferred / Resend fallback) and reading (Gmail). "
+        "Handles sending (provider-agnostic: Gmail preferred / Resend fallback) "
+        "and reading (whichever provider supports it). "
         "For business emails (estimates, proposals) use the specialized tools. "
         "For generic messages use send_email. "
         "Always summarise the email content and confirm with the user before "
@@ -46,7 +48,6 @@ mcp = FastMCP(
 
 def _provider():
     from ..services.email_provider import get_email_provider
-
     return get_email_provider()
 
 
@@ -74,10 +75,10 @@ async def send_email(
     reply_to: Optional[str] = None,
 ) -> str:
     """
-    Send a plain email.
+    Send a plain email via the configured email provider.
 
     to / cc / bcc: single address or comma-separated list.
-    Attempts Gmail first; falls back to Resend if Gmail is unavailable.
+    The provider is resolved at runtime — Gmail preferred, Resend fallback.
     """
     try:
         result = await _provider().send(
@@ -116,23 +117,50 @@ async def send_estimate(
     price: numeric string without the dollar sign (e.g. '150.00')
     service_date: human-readable date (e.g. 'January 20, 2026')
     service_time: human-readable time (e.g. '9:00 AM')
+
+    The email body is rendered from the Atlas template library and sent through
+    the configured email provider (provider-agnostic transport).
     """
     try:
-        from ..tools.email import estimate_email_tool
-
-        result = await estimate_email_tool.execute({
-            "to": to,
-            "client_name": client_name,
-            "address": address,
-            "service_date": service_date,
-            "service_time": service_time,
-            "price": price,
-            "client_type": client_type,
-        })
-        return json.dumps(
-            {"success": result.success, "message": result.message, "data": result.data},
-            default=str,
+        from ..templates.email import (
+            BUSINESS_EMAIL,
+            format_business_email,
+            format_residential_email,
         )
+
+        client_type_norm = client_type.lower().strip()
+        if client_type_norm not in ("business", "residential"):
+            return json.dumps({"success": False, "error": "client_type must be 'business' or 'residential'"})
+
+        if client_type_norm == "business":
+            subject, body = format_business_email(
+                client_name=client_name,
+                address=address,
+                service_date=service_date,
+                service_time=service_time,
+                price=price,
+            )
+        else:
+            subject, body = format_residential_email(
+                client_name=client_name,
+                address=address,
+                service_date=service_date,
+                service_time=service_time,
+                price=price,
+            )
+
+        result = await _provider().send(
+            to=[to],
+            subject=subject,
+            body=body,
+            reply_to=BUSINESS_EMAIL,
+        )
+        return json.dumps({
+            "success": True,
+            "message": f"Estimate confirmation sent to {client_name} ({to}) for {service_date}",
+            "template": client_type_norm,
+            "result": result,
+        }, default=str)
     except Exception as exc:
         logger.exception("send_estimate error")
         return json.dumps({"success": False, "error": str(exc)})
@@ -165,27 +193,78 @@ async def send_proposal(
     frequency: e.g. 'Weekly', 'Bi-weekly', 'Monthly', 'As needed'
 
     If a PDF exists at the configured proposals_dir matching client_name,
-    it is automatically attached.
+    it is automatically attached.  The email is sent through the configured
+    email provider (provider-agnostic transport).
     """
     try:
-        from ..tools.email import proposal_email_tool
-
-        result = await proposal_email_tool.execute({
-            "to": to,
-            "client_name": client_name,
-            "contact_name": contact_name,
-            "address": address,
-            "areas_to_clean": areas_to_clean,
-            "cleaning_description": cleaning_description,
-            "price": price,
-            "client_type": client_type,
-            "frequency": frequency,
-            "contact_phone": contact_phone,
-        })
-        return json.dumps(
-            {"success": result.success, "message": result.message, "data": result.data},
-            default=str,
+        from ..templates.email import (
+            BUSINESS_EMAIL,
+            format_business_proposal,
+            format_residential_proposal,
         )
+        from ..tools.email import find_proposal_pdf
+
+        client_type_norm = client_type.lower().strip()
+        if client_type_norm not in ("business", "residential"):
+            return json.dumps({"success": False, "error": "client_type must be 'business' or 'residential'"})
+
+        if client_type_norm == "business" and not contact_phone:
+            return json.dumps({"success": False, "error": "contact_phone is required for business proposals"})
+
+        if client_type_norm == "business":
+            subject, body = format_business_proposal(
+                client_name=client_name,
+                contact_name=contact_name,
+                contact_phone=contact_phone,
+                address=address,
+                areas_to_clean=areas_to_clean,
+                cleaning_description=cleaning_description,
+                price=price,
+                frequency=frequency,
+            )
+        else:
+            subject, body = format_residential_proposal(
+                client_name=client_name,
+                contact_name=contact_name,
+                address=address,
+                areas_to_clean=areas_to_clean,
+                cleaning_description=cleaning_description,
+                price=price,
+                frequency=frequency,
+            )
+
+        # Auto-find proposal PDF attachment
+        attachments: list[dict] | None = None
+        pdf_path = find_proposal_pdf(client_name)
+        if pdf_path:
+            import base64
+            from pathlib import Path
+            pdf_bytes = Path(pdf_path).read_bytes()
+            attachments = [{
+                "filename": Path(pdf_path).name,
+                "content": base64.b64encode(pdf_bytes).decode(),
+                "type": "application/pdf",
+            }]
+            logger.info("Auto-attaching proposal PDF: %s", pdf_path)
+
+        result = await _provider().send(
+            to=[to],
+            subject=subject,
+            body=body,
+            reply_to=BUSINESS_EMAIL,
+            attachments=attachments,
+        )
+
+        msg = f"Proposal sent to {client_name} ({to}) — ${price} {frequency}"
+        if pdf_path:
+            msg += " [PDF attached]"
+        return json.dumps({
+            "success": True,
+            "message": msg,
+            "template": client_type_norm,
+            "pdf_attached": bool(pdf_path),
+            "result": result,
+        }, default=str)
     except Exception as exc:
         logger.exception("send_proposal error")
         return json.dumps({"success": False, "error": str(exc)})
@@ -201,9 +280,9 @@ async def list_inbox(
     max_results: int = 20,
 ) -> str:
     """
-    List Gmail inbox messages matching a search query.
+    List inbox messages matching a search query.
 
-    query: Gmail search syntax (default 'is:unread'). Examples:
+    query: provider search syntax (default 'is:unread'). Gmail examples:
         'is:unread newer_than:1d'
         'from:john@example.com'
         'subject:invoice has:attachment'
@@ -227,7 +306,7 @@ async def list_inbox(
 @mcp.tool()
 async def get_message(message_id: str) -> str:
     """
-    Fetch a Gmail message with its full body content.
+    Fetch a message with its full body content.
 
     Returns from, subject, date, snippet, body_text, label_ids, thread_id.
     """
@@ -246,9 +325,9 @@ async def get_message(message_id: str) -> str:
 @mcp.tool()
 async def search_inbox(query: str, max_results: int = 20) -> str:
     """
-    Search Gmail inbox and return messages with metadata.
+    Search inbox and return messages with metadata.
 
-    Uses full Gmail search syntax:
+    Uses provider search syntax (Gmail examples):
         from:alice@example.com
         subject:"invoice" newer_than:7d
         is:unread has:attachment
@@ -260,7 +339,6 @@ async def search_inbox(query: str, max_results: int = 20) -> str:
         message_stubs = await provider.list_messages(
             query=query, max_results=min(max_results, 100)
         )
-        # Enrich up to 10 results with metadata for useful context
         enriched: list[dict] = []
         for stub in message_stubs[:10]:
             try:
@@ -268,7 +346,6 @@ async def search_inbox(query: str, max_results: int = 20) -> str:
                 enriched.append(meta)
             except Exception:
                 enriched.append(stub)
-
         return json.dumps(
             {"results": enriched, "total_matched": len(message_stubs)}, default=str
         )
@@ -284,7 +361,7 @@ async def search_inbox(query: str, max_results: int = 20) -> str:
 @mcp.tool()
 async def get_thread(thread_id: str) -> str:
     """
-    Fetch a Gmail thread with all of its messages (metadata format).
+    Fetch a thread with all of its messages (metadata format).
 
     Useful for reading an entire conversation chain in one call.
     """
@@ -313,7 +390,7 @@ async def list_sent_history(
     template_type: 'estimate' | 'proposal' | 'generic' — or omit for all
     limit: max results (default 20)
 
-    This covers all outbound mail sent via Atlas tools, not Gmail generally.
+    This covers all outbound mail sent via Atlas tools, not inbox mail.
     """
     try:
         from ..tools.email import query_email_history_tool

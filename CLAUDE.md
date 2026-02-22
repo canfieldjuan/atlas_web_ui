@@ -16,8 +16,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 │              (Cloud/Server - Central Intelligence)               │
 │                                                                  │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐              │
-│  │     LLM     │  │     VLM     │  │     STT     │   AI Models  │
-│  │  (Reasoning)│  │   (Vision)  │  │   (Speech)  │              │
+│  │     LLM     │  │     STT     │  │     TTS     │   AI Models  │
+│  │  (Reasoning)│  │   (Speech)  │  │   (Voice)   │              │
 │  └─────────────┘  └─────────────┘  └─────────────┘              │
 │                                                                  │
 │  ┌─────────────────────────────────────────────────┐            │
@@ -53,9 +53,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ Natural language intent parsing
 - ✅ Home Assistant integration (WebSocket real-time state, media players)
 - ✅ LLM for conversations and reasoning
-- ✅ VLM for vision queries
 - ✅ STT/TTS for voice interface
 - ✅ PostgreSQL for conversation persistence
+- ✅ Directus CRM — single source of truth for customer/contact data
+- ✅ CRM MCP server (9 tools)
+- ✅ Email MCP server (8 tools, provider-agnostic)
 
 ### Future Capabilities (Planned)
 - 🔲 Unified always-on voice interface (wake word "Hey Atlas")
@@ -87,7 +89,7 @@ When working on Atlas, always ask: "Does this fit the big picture?"
 Atlas is a centralized AI "Brain" server and extensible automation platform. It provides:
 - **AI Services**: Text, vision, and speech-to-text inference via REST API
 - **Device Control**: Extensible capability system for IoT devices, home automation
-- **Intent Dispatch**: Natural language commands to device actions via VLM
+- **Intent Dispatch**: Natural language commands to device actions via LLM
 - **Voice Interface**: Wake word activated, seamless chat + control
 
 ## Build and Run Commands
@@ -181,14 +183,6 @@ curl -X POST http://127.0.0.1:8000/api/v1/query/vision \
 curl -X POST http://127.0.0.1:8000/api/v1/query/audio \
   -F "audio_file=@audio.wav"
 
-# List available VLM models
-curl http://127.0.0.1:8000/api/v1/models/vlm
-
-# Hot-swap VLM model (no built-in VLM registered by default; add one in services/vlm/)
-curl -X POST http://127.0.0.1:8000/api/v1/models/vlm/activate \
-  -H "Content-Type: application/json" \
-  -d '{"name": "my-model"}'
-
 # List registered devices
 curl http://127.0.0.1:8000/api/v1/devices/
 
@@ -211,14 +205,14 @@ atlas_brain/
 ├── config.py                    # Pydantic Settings for configuration
 │
 ├── api/                         # API layer (routing only)
-│   ├── dependencies.py          # FastAPI Depends (get_vlm, get_stt)
+│   ├── dependencies.py          # FastAPI Depends (inject services)
 │   ├── health.py                # /ping, /health
 │   ├── query/                   # AI inference endpoints
 │   │   ├── text.py              # POST /query/text
 │   │   ├── audio.py             # POST /query/audio, WS /ws/query/audio
 │   │   └── vision.py            # POST /query/vision
-│   ├── models/                  # Model management
-│   │   └── management.py        # GET/POST /models/vlm, /models/stt
+│   └── models/                  # Model management
+│       └── management.py        # GET/POST /models/stt, /models/llm
 │   └── devices/                 # Device control
 │       └── control.py           # /devices/*, /devices/intent
 │
@@ -226,12 +220,11 @@ atlas_brain/
 │   └── query.py
 │
 ├── services/                    # AI model services
-│   ├── protocols.py             # VLMService, STTService protocols
+│   ├── protocols.py             # LLMService protocol
 │   ├── base.py                  # BaseModelService with shared utilities
-│   ├── registry.py              # ServiceRegistry for hot-swapping
+│   ├── registry.py              # ServiceRegistry for hot-swapping (LLM)
 │   ├── crm_provider.py          # CRM: DirectusCRMProvider + DatabaseCRMProvider
 │   ├── email_provider.py        # Email: GmailEmailProvider + ResendEmailProvider
-│   ├── vlm/                     # VLM implementations (none built-in; add yours here)
 │   └── stt/
 │       └── nemotron.py          # @register_stt("nemotron")
 │
@@ -255,11 +248,11 @@ atlas_brain/mcp/                 # MCP servers (Claude Desktop / Cursor compatib
 
 ## Key Patterns
 
-**Service Registry**: AI models are managed via registries that support runtime hot-swapping:
+**Service Registry**: LLM services are managed via a registry supporting runtime hot-swapping:
 ```python
-from atlas_brain.services import vlm_registry
-vlm_registry.activate("my-model")  # Load a registered VLM implementation
-vlm_registry.deactivate()           # Unload to free VRAM
+from atlas_brain.services import llm_registry
+llm_registry.activate("ollama")  # Load a registered LLM implementation
+llm_registry.deactivate()         # Unload to free resources
 ```
 
 **CRM Provider**: Single source of truth for all customer/contact data:
@@ -291,25 +284,6 @@ intent = await intent_parser.parse("turn on the lights")
 result = await action_dispatcher.dispatch_intent(intent)
 ```
 
-## Adding New VLM Models
-
-The `moondream` VLM was removed (it required PIL/transformers and was unused).
-To add a new VLM, create a file in `services/vlm/` and register it:
-
-```python
-from ..registry import register_vlm
-from ..base import BaseModelService
-
-@register_vlm("my-model")
-class MyVLM(BaseModelService):
-    def load(self): ...
-    def unload(self): ...
-    def process_text(self, query): ...
-    async def process_vision(self, image_bytes, prompt): ...
-```
-
-Then set `ATLAS_VLM_DEFAULT_MODEL=my-model` and `ATLAS_LOAD_VLM_ON_STARTUP=true`.
-
 ## Adding New Device Types
 
 Create in `capabilities/devices/`:
@@ -326,14 +300,15 @@ class ThermostatCapability:
 ## Environment Variables
 
 ```bash
-# AI Models
-# ATLAS_VLM_DEFAULT_MODEL=     # No VLM registered by default; add one in services/vlm/
-ATLAS_LOAD_VLM_ON_STARTUP=false
-ATLAS_STT_WHISPER_MODEL_SIZE=small.en
-ATLAS_LOAD_STT_ON_STARTUP=false
+# AI Models (LLM)
 ATLAS_LLM_OLLAMA_MODEL=qwen3:14b
 ATLAS_LLM_CLOUD_ENABLED=true
 ATLAS_LLM_CLOUD_OLLAMA_MODEL=minimax-m2:cloud
+ATLAS_LOAD_LLM_ON_STARTUP=true
+
+# STT
+ATLAS_STT_WHISPER_MODEL_SIZE=small.en
+ATLAS_LOAD_STT_ON_STARTUP=false
 
 # MQTT Backend (optional)
 ATLAS_MQTT_ENABLED=false

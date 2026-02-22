@@ -11,19 +11,6 @@ from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class VLMConfig(BaseSettings):
-    """VLM-specific configuration.
-
-    moondream was the only implementation and has been removed.
-    Register a new VLM by adding an implementation in atlas_brain/services/vlm/
-    and setting ATLAS_VLM_DEFAULT_MODEL to its registered name.
-    """
-
-    model_config = SettingsConfigDict(env_prefix="ATLAS_VLM_")
-
-    default_model: str = Field(default="", description="Name of the VLM to load on startup (empty = none)")
-
-
 class STTConfig(BaseSettings):
     """STT-specific configuration."""
 
@@ -299,29 +286,6 @@ class RecognitionConfig(BaseSettings):
     iou_threshold: float = Field(
         default=0.3,
         description="Min IoU to associate pose with track bounding box"
-    )
-
-
-class VOSConfig(BaseSettings):
-    """VOS (Video Object Segmentation) configuration."""
-
-    model_config = SettingsConfigDict(
-        env_prefix="ATLAS_VOS_",
-        env_file=".env",
-        extra="ignore",
-    )
-
-    enabled: bool = Field(default=False, description="Enable VOS service")
-    default_model: str = Field(default="sam3", description="Default VOS model")
-    device: str = Field(default="cuda", description="Device for inference")
-    dtype: str = Field(default="float16", description="Model dtype")
-    bpe_path: Optional[str] = Field(
-        default=None,
-        description="Path to BPE vocab file (auto-detected if None)"
-    )
-    load_from_hf: bool = Field(
-        default=True,
-        description="Load model from HuggingFace"
     )
 
 
@@ -1806,10 +1770,6 @@ class Settings(BaseSettings):
     models_dir: Path = Field(default=Path("models"), description="Models cache directory")
 
     # Startup behavior
-    load_vlm_on_startup: bool = Field(
-        default=False,
-        description="Load VLM on startup (no VLM implementations registered by default)",
-    )
     load_stt_on_startup: bool = Field(default=True, description="Load STT on startup")
     load_tts_on_startup: bool = Field(default=True, description="Load TTS on startup")
     load_llm_on_startup: bool = Field(default=True, description="Load LLM on startup")
@@ -1819,25 +1779,18 @@ class Settings(BaseSettings):
         default=False, description="Load speaker ID on startup"
     )
 
-    # Startup behavior - VOS
-    load_vos_on_startup: bool = Field(
-        default=False, description="Load VOS on startup"
-    )
-
     # Startup behavior - Omni (unified speech-to-speech)
     load_omni_on_startup: bool = Field(
         default=False, description="Load Omni (unified voice) on startup"
     )
 
     # Nested configs
-    vlm: VLMConfig = Field(default_factory=VLMConfig)
     stt: STTConfig = Field(default_factory=STTConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     omni: OmniConfig = Field(default_factory=OmniConfig)
     speaker_id: SpeakerIDConfig = Field(default_factory=SpeakerIDConfig)
     recognition: RecognitionConfig = Field(default_factory=RecognitionConfig)
-    vos: VOSConfig = Field(default_factory=VOSConfig)
     orchestration: OrchestrationConfig = Field(default_factory=OrchestrationConfig)
     mqtt: MQTTConfig = Field(default_factory=MQTTConfig)
     homeassistant: HomeAssistantConfig = Field(default_factory=HomeAssistantConfig)

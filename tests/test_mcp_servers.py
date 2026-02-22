@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 # through services/__init__.py and tools/__init__.py.
 # ---------------------------------------------------------------------------
 for _heavy_mod in [
-    "PIL", "PIL.Image",          # moondream VLM (removed, but kept for safety)
+    "PIL", "PIL.Image",          # no longer used (VLM removed), kept to avoid import errors
     "torch",                     # PyTorch — GPU runtime only
     "transformers",              # HuggingFace transformers — GPU runtime only
     "numpy",                     # NumPy — required by sentence-transformers/embedding
