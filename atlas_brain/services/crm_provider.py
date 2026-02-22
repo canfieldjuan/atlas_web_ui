@@ -305,7 +305,7 @@ class DatabaseCRMProvider:
                 contact_type, status, tags, notes, source, source_ref,
                 created_at, updated_at, metadata
             ) VALUES (
-                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$18,$19::jsonb
+                $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb
             ) RETURNING *
             """,
             contact_id,
@@ -325,7 +325,8 @@ class DatabaseCRMProvider:
             data.get("notes"),
             data.get("source", "manual"),
             data.get("source_ref"),
-            now,
+            now,   # created_at ($18)
+            now,   # updated_at ($19) — same value on insert
             metadata_json,
         )
         return dict(row) if row else {}

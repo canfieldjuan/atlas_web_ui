@@ -12,12 +12,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class VLMConfig(BaseSettings):
-    """VLM-specific configuration."""
+    """VLM-specific configuration.
+
+    moondream was the only implementation and has been removed.
+    Register a new VLM by adding an implementation in atlas_brain/services/vlm/
+    and setting ATLAS_VLM_DEFAULT_MODEL to its registered name.
+    """
 
     model_config = SettingsConfigDict(env_prefix="ATLAS_VLM_")
 
-    default_model: str = Field(default="moondream", description="Default VLM to load on startup")
-    moondream_cache: Path = Field(default=Path("models/moondream"), description="Cache path for moondream model")
+    default_model: str = Field(default="", description="Name of the VLM to load on startup (empty = none)")
 
 
 class STTConfig(BaseSettings):
@@ -1802,7 +1806,10 @@ class Settings(BaseSettings):
     models_dir: Path = Field(default=Path("models"), description="Models cache directory")
 
     # Startup behavior
-    load_vlm_on_startup: bool = Field(default=True, description="Load VLM on startup")
+    load_vlm_on_startup: bool = Field(
+        default=False,
+        description="Load VLM on startup (no VLM implementations registered by default)",
+    )
     load_stt_on_startup: bool = Field(default=True, description="Load STT on startup")
     load_tts_on_startup: bool = Field(default=True, description="Load TTS on startup")
     load_llm_on_startup: bool = Field(default=True, description="Load LLM on startup")

@@ -25,8 +25,7 @@ from .registry import (
     vos_registry,
 )
 
-# Import implementations to trigger registration
-from . import vlm  # noqa: F401
+# Import LLM implementations to trigger registration
 from . import llm  # noqa: F401
 
 # New services

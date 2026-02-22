@@ -10,11 +10,21 @@ from unittest.mock import MagicMock
 
 # ---------------------------------------------------------------------------
 # Mock heavy/unavailable dependencies at import time.
-# PIL (Pillow) is required by the moondream VLM but isn't installed in the
-# unit-test environment.  Setting it up in sys.modules before atlas_brain
-# is imported prevents the ImportError cascade through services/__init__.py.
+# The following packages are only present in the full GPU runtime environment;
+# they are not installed in the unit-test sandbox.  Registering them as
+# MagicMocks before any atlas_brain import prevents the ImportError cascade
+# through services/__init__.py and tools/__init__.py.
 # ---------------------------------------------------------------------------
-for _heavy_mod in ["PIL", "PIL.Image", "transformers", "torch"]:
+for _heavy_mod in [
+    "PIL", "PIL.Image",          # moondream VLM (removed, but kept for safety)
+    "torch",                     # PyTorch — GPU runtime only
+    "transformers",              # HuggingFace transformers — GPU runtime only
+    "numpy",                     # NumPy — required by sentence-transformers/embedding
+    "sentence_transformers",     # Semantic embedding — GPU runtime only
+    "asyncpg",                   # Async PostgreSQL — requires running DB
+    "llama_cpp",                 # llama.cpp LLM backend — GPU runtime only
+    "dateparser",                # Date parsing library — not installed in test env
+]:
     sys.modules.setdefault(_heavy_mod, MagicMock())
 
 import json
@@ -85,10 +95,9 @@ class TestDatabaseCRMProvider:
         contact_data = _make_contact()
         pool = self._mock_pool(fetchrow_return=contact_data)
 
-        with patch("atlas_brain.services.crm_provider.DatabaseCRMProvider.create_contact") as mock_create:
-            mock_create = AsyncMock(return_value=contact_data)
+        with patch("atlas_brain.services.crm_provider.DatabaseCRMProvider.create_contact",
+                   new=AsyncMock(return_value=contact_data)):
             provider = DatabaseCRMProvider()
-            provider.create_contact = mock_create
 
             result = await provider.create_contact({
                 "full_name": "Jane Smith",
@@ -153,7 +162,7 @@ class TestGetCrmProviderFactory:
         mock_settings.directus.enabled = False
         mock_settings.directus.token = None
 
-        with patch("atlas_brain.services.crm_provider.settings", mock_settings):
+        with patch("atlas_brain.config.settings", mock_settings):
             provider = mod.get_crm_provider()
             from atlas_brain.services.crm_provider import DatabaseCRMProvider
             assert isinstance(provider, DatabaseCRMProvider)
@@ -171,7 +180,7 @@ class TestGetCrmProviderFactory:
         mock_settings.directus.url = "http://localhost:8055"
         mock_settings.directus.timeout = 10.0
 
-        with patch("atlas_brain.services.crm_provider.settings", mock_settings):
+        with patch("atlas_brain.config.settings", mock_settings):
             provider = mod.get_crm_provider()
             from atlas_brain.services.crm_provider import DirectusCRMProvider
             assert isinstance(provider, DirectusCRMProvider)
@@ -537,7 +546,9 @@ class TestLookupCustomerToolCRMFirst:
         mock_crm.get_contact_appointments = AsyncMock(return_value=[])
 
         tool = LookupCustomerTool()
-        with patch("atlas_brain.tools.scheduling.get_crm_provider", return_value=mock_crm):
+        # get_crm_provider is imported lazily inside execute() via
+        # "from ..services.crm_provider import get_crm_provider"
+        with patch("atlas_brain.services.crm_provider.get_crm_provider", return_value=mock_crm):
             result = await tool.execute({"name": "Jane"})
 
         assert result.success is True
@@ -548,7 +559,6 @@ class TestLookupCustomerToolCRMFirst:
     async def test_falls_back_to_appointments_when_crm_empty(self):
         """When CRM returns nothing the tool falls back to appointment rows."""
         from atlas_brain.tools.scheduling import LookupCustomerTool
-        from atlas_brain.storage.exceptions import DatabaseUnavailableError
 
         mock_crm = MagicMock()
         mock_crm.search_contacts = AsyncMock(return_value=[])
@@ -562,7 +572,7 @@ class TestLookupCustomerToolCRMFirst:
 
         tool = LookupCustomerTool()
         with (
-            patch("atlas_brain.tools.scheduling.get_crm_provider", return_value=mock_crm),
+            patch("atlas_brain.services.crm_provider.get_crm_provider", return_value=mock_crm),
             patch("atlas_brain.tools.scheduling.get_appointment_repo", return_value=mock_repo),
         ):
             result = await tool.execute({"name": "Jane"})
