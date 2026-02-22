@@ -28,12 +28,7 @@ logger = logging.getLogger("atlas.services.crm_provider")
 # ---------------------------------------------------------------------------
 
 class DatabaseCRMProvider:
-    """
-    Fallback CRM provider that queries the `contacts` table directly via asyncpg.
-
-    Used in local dev or when Directus is not running.  Produces identical data
-    to DirectusCRMProvider because both operate on the same Postgres tables.
-    """
+    """CRM provider — queries the `contacts` table directly via asyncpg."""
 
     async def health_check(self) -> bool:
         try:
@@ -44,15 +39,53 @@ class DatabaseCRMProvider:
             return False
 
     async def create_contact(self, data: dict[str, Any]) -> dict[str, Any]:
+        """
+        Create a contact, returning an existing one if phone or email already matches.
+
+        Dedup order: phone first (more unique), then email.  If a match is found the
+        existing record is updated with any non-null fields from `data` so the caller
+        always gets the most complete version.  This is application-level dedup;
+        migration 037 should add a DB-level partial unique index for extra safety.
+        """
+        # --- dedup check ---
+        raw_email = data.get("email")
+        email = raw_email.lower() if raw_email else None
+        phone = data.get("phone")
+
+        existing: Optional[dict[str, Any]] = None
+        if phone:
+            matches = await self.search_contacts(phone=phone)
+            if matches:
+                existing = matches[0]
+        if existing is None and email:
+            matches = await self.search_contacts(email=email)
+            if matches:
+                existing = matches[0]
+
+        if existing is not None:
+            # Merge any new non-null fields into the existing record
+            _MERGEABLE = {
+                "full_name", "first_name", "last_name", "email", "phone",
+                "address", "city", "state", "zip", "contact_type",
+                "tags", "notes", "business_context_id", "source", "source_ref",
+            }
+            updates = {
+                k: (v.lower() if k == "email" and v else v)
+                for k, v in data.items()
+                if k in _MERGEABLE and v
+            }
+            if updates:
+                merged = await self.update_contact(existing["id"], updates)
+                return merged or existing
+            return existing
+
+        # --- no existing contact — insert ---
         from ..storage.database import get_db_pool
 
         pool = get_db_pool()
         contact_id = str(uuid4())
         now = datetime.now(timezone.utc)
         metadata_json = json.dumps(data.get("metadata", {}))
-        # Normalize email to lowercase for consistent searches
-        raw_email = data.get("email")
-        email = raw_email.lower() if raw_email else None
 
         row = await pool.fetchrow(
             """
@@ -70,7 +103,7 @@ class DatabaseCRMProvider:
             data.get("first_name"),
             data.get("last_name"),
             email,  # normalized lowercase
-            data.get("phone"),
+            phone,
             data.get("address"),
             data.get("city"),
             data.get("state"),
@@ -87,6 +120,29 @@ class DatabaseCRMProvider:
             metadata_json,
         )
         return dict(row) if row else {}
+
+    async def find_or_create_contact(
+        self,
+        full_name: str,
+        phone: Optional[str] = None,
+        email: Optional[str] = None,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        """
+        Convenience method: find existing contact by phone/email or create a new one.
+
+        Used by booking workflows (J3) and call intelligence (S2) to reliably
+        resolve a customer to a single contact record.
+
+        Returns the contact dict (existing or newly created).
+        """
+        data: dict[str, Any] = {"full_name": full_name}
+        if phone:
+            data["phone"] = phone
+        if email:
+            data["email"] = email
+        data.update(extra)
+        return await self.create_contact(data)
 
     async def get_contact(self, contact_id: str) -> Optional[dict[str, Any]]:
         from ..storage.database import get_db_pool
