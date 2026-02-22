@@ -8,7 +8,6 @@ Used by the model-swap scheduled tasks to enforce the day/night split:
 All calls go to the Ollama REST API; no direct GPU interaction.
 """
 import logging
-from typing import Optional
 
 import httpx
 

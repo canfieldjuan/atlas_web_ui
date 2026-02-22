@@ -339,7 +339,7 @@ class TaskScheduler:
             "task_type": "builtin",
             "schedule_type": "cron",
             "cron_expression": "30 7 * * *",
-            "timeout_seconds": 120,
+            "timeout_seconds": 300,  # load_model httpx timeout is 120s + list/unload overhead
             "metadata": {"builtin_handler": "model_swap_day"},
         },
         {
