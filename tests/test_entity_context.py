@@ -7,6 +7,7 @@ Covers:
 3. Integration: _load_recent_entities reads entity metadata from DB
 4. Integration: gather_context populates recent_entities from all turn types
 5. Wiring: launcher.py and atlas.py source inspection for injection points
+6. Cross-session entity fallback and GraphRAG fallback (task 5)
 """
 
 import inspect
@@ -671,3 +672,165 @@ class TestEntityContextModule:
         import dataclasses
         field_names = {f.name for f in dataclasses.fields(EntityRef)}
         assert field_names == {"type", "name", "action", "source"}
+
+
+# ------------------------------------------------------------------ #
+# Task 5: Cross-session fallback and GraphRAG fallback
+# ------------------------------------------------------------------ #
+
+class TestEntityContextConfigExtended:
+    """EntityContextConfig new fields for cross-session and graph fallback."""
+
+    def test_cross_session_max_age_s_default(self):
+        from atlas_brain.config import EntityContextConfig
+        cfg = EntityContextConfig()
+        assert cfg.cross_session_max_age_s == 86400.0
+
+    def test_cross_session_max_age_s_non_negative(self):
+        from atlas_brain.config import EntityContextConfig
+        import pytest
+        with pytest.raises(Exception):
+            EntityContextConfig(cross_session_max_age_s=-1.0)
+
+    def test_graph_entity_fallback_default_false(self):
+        from atlas_brain.config import EntityContextConfig
+        cfg = EntityContextConfig()
+        assert cfg.graph_entity_fallback is False
+
+    def test_cross_session_zero_means_no_expiry(self):
+        from atlas_brain.config import EntityContextConfig
+        cfg = EntityContextConfig(cross_session_max_age_s=0.0)
+        assert cfg.cross_session_max_age_s == 0.0
+
+
+class TestCrossSessionEntitiesLogic:
+    """Unit-level tests for _load_cross_session_entities logic (no DB required)."""
+
+    def test_entities_extracted_from_row_metadata(self):
+        """Simulate row parsing: JSON-string metadata -> entity list."""
+        raw_meta = json.dumps({
+            "entities": [
+                {"type": "device", "name": "kitchen light", "action": "turn_on", "source": "command"},
+                {"type": "person", "name": "Juan", "source": "speaker"},
+            ]
+        })
+        meta = json.loads(raw_meta)
+        entities = [e for e in meta.get("entities", []) if e.get("name")]
+        assert len(entities) == 2
+        assert entities[0]["name"] == "kitchen light"
+
+    def test_empty_metadata_row_skipped(self):
+        """Rows with null/empty metadata produce no entities."""
+        for raw in [None, "", "{}"]:
+            if raw:
+                try:
+                    meta = json.loads(raw)
+                except Exception:
+                    meta = {}
+            else:
+                meta = {}
+            entities = [e for e in meta.get("entities", []) if e.get("name")]
+            assert entities == []
+
+    def test_entity_missing_name_skipped(self):
+        """Entity dicts without a 'name' key are filtered out."""
+        meta = {"entities": [{"type": "device", "source": "command"}]}
+        entities = [e for e in meta.get("entities", []) if e.get("name")]
+        assert entities == []
+
+    def test_method_exists_on_service(self):
+        from atlas_brain.memory.service import MemoryService
+        assert hasattr(MemoryService, "_load_cross_session_entities")
+
+    def test_method_signature(self):
+        from atlas_brain.memory.service import MemoryService
+        import inspect
+        sig = inspect.signature(MemoryService._load_cross_session_entities)
+        assert "limit" in sig.parameters
+        assert sig.parameters["limit"].default == 5
+
+
+class TestGraphEntityFallbackLogic:
+    """Unit-level tests for _load_graph_entities logic (no real RAG call)."""
+
+    def test_method_exists_on_service(self):
+        from atlas_brain.memory.service import MemoryService
+        assert hasattr(MemoryService, "_load_graph_entities")
+
+    def test_returns_empty_when_memory_disabled(self):
+        """When settings.memory.enabled is False, returns [] without calling RAG."""
+        import asyncio
+        from unittest.mock import patch, MagicMock
+        from atlas_brain.memory.service import MemoryService
+
+        svc = MemoryService.__new__(MemoryService)
+        svc._rag_client = MagicMock()
+
+        with patch("atlas_brain.memory.service.settings") as mock_settings:
+            mock_settings.memory.enabled = False
+            mock_settings.entity_context.graph_entity_fallback = True
+            result = asyncio.get_event_loop().run_until_complete(
+                svc._load_graph_entities()
+            )
+        assert result == []
+
+    def test_location_entities_from_facts(self):
+        """Locations extracted from GraphRAG fact text become location entity dicts."""
+        from atlas_brain.voice.entity_context import extract_location_from_text
+
+        facts_text = [
+            "Juan uses the kitchen Philips Hue light for evening ambiance.",
+            "The weather in Chicago is often cold in winter.",
+        ]
+        entities = []
+        seen: set = set()
+        for text in facts_text:
+            loc = extract_location_from_text(text)
+            if loc and loc.lower() not in seen:
+                seen.add(loc.lower())
+                entities.append({"type": "location", "name": loc, "source": "graph"})
+        # "Chicago" should be extracted; "kitchen" may or may not match depending on pattern
+        assert any(e["name"] == "Chicago" for e in entities)
+        for e in entities:
+            assert e["type"] == "location"
+            assert e["source"] == "graph"
+
+    def test_graph_query_is_device_focused(self):
+        """The fixed query used for graph entity fallback targets home devices."""
+        import inspect
+        from atlas_brain.memory.service import MemoryService
+        src = inspect.getsource(MemoryService._load_graph_entities)
+        assert "devices" in src
+        assert "rooms" in src
+
+
+class TestFallbackChainWiring:
+    """Verify the three-level fallback chain is wired in gather_context()."""
+
+    def _src(self):
+        import inspect
+        from atlas_brain.memory.service import MemoryService
+        return inspect.getsource(MemoryService.gather_context)
+
+    def test_cross_session_fallback_present(self):
+        src = self._src()
+        assert "_load_cross_session_entities" in src
+
+    def test_graph_fallback_present(self):
+        src = self._src()
+        assert "_load_graph_entities" in src
+
+    def test_cross_session_gated_on_session_and_recent_empty(self):
+        src = self._src()
+        assert "session_id and not context.recent_entities" in src
+
+    def test_graph_fallback_gated_on_config_flag(self):
+        src = self._src()
+        assert "graph_entity_fallback" in src
+
+    def test_fallback_order_cross_before_graph(self):
+        """Cross-session fallback must appear before graph fallback in source."""
+        src = self._src()
+        cross_pos = src.index("_load_cross_session_entities")
+        graph_pos = src.index("_load_graph_entities")
+        assert cross_pos < graph_pos

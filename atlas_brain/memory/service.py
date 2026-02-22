@@ -7,9 +7,10 @@ Aggregates context from multiple sources:
 - ContextAggregator: Real-time physical awareness
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 from uuid import UUID
 
@@ -147,6 +148,20 @@ class MemoryService:
             except Exception as e:
                 logger.debug("Recent entities load failed: %s", e)
 
+        # Cross-session fallback: entities from recent turns in other sessions
+        if include_history and session_id and not context.recent_entities and db_settings.enabled:
+            try:
+                context.recent_entities = await self._load_cross_session_entities(limit=5)
+            except Exception as e:
+                logger.debug("Cross-session entities load failed: %s", e)
+
+        # GraphRAG fallback: entity hints from knowledge graph (opt-in via config)
+        if include_history and not context.recent_entities and settings.entity_context.graph_entity_fallback:
+            try:
+                context.recent_entities = await self._load_graph_entities()
+            except Exception as e:
+                logger.debug("Graph entity fallback failed: %s", e)
+
         # Load physical context from ContextAggregator
         if include_physical:
             try:
@@ -280,6 +295,105 @@ class MemoryService:
             return entities
         except Exception as e:
             logger.warning("Failed to load recent entities: %s", e)
+            return []
+
+    async def _load_cross_session_entities(self, limit: int = 5) -> list[dict]:
+        """
+        Fallback: load entities from recent turns across ALL sessions.
+
+        Used when the current session has no recent entities (e.g. start of a new
+        session). Applies a longer staleness window (cross_session_max_age_s, default 24h).
+        Works for single-user Atlas without needing a user/speaker identifier.
+        """
+        from ..storage.database import get_db_pool
+        from datetime import timezone as _tz
+
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            return []
+
+        try:
+            max_age_s = settings.entity_context.cross_session_max_age_s
+            if max_age_s > 0:
+                cutoff = datetime.now(_tz.utc) - timedelta(seconds=max_age_s)
+                rows = await pool.fetch(
+                    """
+                    SELECT metadata, created_at
+                    FROM conversation_turns
+                    WHERE created_at > $1
+                      AND metadata ? 'entities'
+                    ORDER BY created_at DESC
+                    LIMIT $2
+                    """,
+                    cutoff,
+                    limit * 6,
+                )
+            else:
+                rows = await pool.fetch(
+                    """
+                    SELECT metadata, created_at
+                    FROM conversation_turns
+                    WHERE metadata ? 'entities'
+                    ORDER BY created_at DESC
+                    LIMIT $1
+                    """,
+                    limit * 6,
+                )
+
+            entities: list[dict] = []
+            for row in rows:
+                raw = row["metadata"]
+                if not raw:
+                    continue
+                meta = json.loads(raw) if isinstance(raw, str) else raw
+                for e in meta.get("entities", []):
+                    if e.get("name"):
+                        entities.append(e)
+            return entities
+        except Exception as e:
+            logger.warning("Failed to load cross-session entities: %s", e)
+            return []
+
+    async def _load_graph_entities(self, max_facts: int = 5) -> list[dict]:
+        """
+        GraphRAG fallback: search for entity hints when no recent turns have entities.
+
+        Runs a fixed query for home/device context and extracts locations from facts.
+        Only runs when settings.memory.enabled is True.
+        Uses a short timeout (3s) to avoid blocking the voice pipeline.
+        """
+        if not settings.memory.enabled:
+            return []
+
+        try:
+            import asyncio
+            from ..voice.entity_context import extract_location_from_text
+
+            result = await asyncio.wait_for(
+                self._rag_client.search(
+                    query="home devices rooms smart lights thermostat frequently used",
+                    max_facts=max_facts,
+                ),
+                timeout=3.0,
+            )
+            if not result.facts:
+                return []
+
+            entities: list[dict] = []
+            seen: set[str] = set()
+            for fact in result.facts:
+                location = extract_location_from_text(fact.fact)
+                if location and location.lower() not in seen:
+                    seen.add(location.lower())
+                    entities.append({
+                        "type": "location",
+                        "name": location,
+                        "action": "",
+                        "source": "graph",
+                    })
+            return entities
+        except Exception as e:
+            logger.debug("Graph entity fallback failed: %s", e)
             return []
 
     async def _load_user_profile(self, user_id: str):

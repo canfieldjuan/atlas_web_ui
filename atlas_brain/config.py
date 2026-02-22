@@ -1225,6 +1225,25 @@ class EntityContextConfig(BaseSettings):
         ),
     )
 
+    cross_session_max_age_s: float = Field(
+        default=86400.0,
+        ge=0.0,
+        description=(
+            "Maximum age in seconds for cross-session entity fallback. "
+            "When the current session has no recent entities, Atlas looks back "
+            "across all sessions up to this window. 0 = no expiry. Default 86400 = 24h."
+        ),
+    )
+
+    graph_entity_fallback: bool = Field(
+        default=False,
+        description=(
+            "When True, fall back to GraphRAG for entity hints when both "
+            "current-session and cross-session entity lookups return nothing. "
+            "Only applies when ATLAS_MEMORY__ENABLED=true."
+        ),
+    )
+
 
 class FreeModeConfig(BaseSettings):
     """Free Conversation Mode — always-on listening when conditions are met.
