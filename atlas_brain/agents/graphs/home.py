@@ -15,7 +15,7 @@ from langgraph.graph import END, StateGraph
 from .state import ActionResult, HomeAgentState, Intent
 from ..entity_tracker import EntityTracker, extract_pronoun, has_pronoun
 from ..tools import AtlasAgentTools, get_agent_tools
-from ...utils.cuda_lock import get_cuda_lock
+
 
 logger = logging.getLogger("atlas.agents.graphs.home")
 
@@ -398,9 +398,6 @@ async def generate_response(state: HomeAgentState) -> HomeAgentState:
     return result
 
 
-_HOME_MAX_HISTORY = 4  # 2 exchanges -- enough for follow-ups without bloating prompt
-
-
 async def _fetch_session_history(
     input_text: str,
     session_id: Optional[str],
@@ -412,6 +409,7 @@ async def _fetch_session_history(
         from ...storage.config import db_settings
         if not db_settings.enabled:
             return []
+        from ...config import settings
         from ...memory.service import get_memory_service
         from ...services.protocols import Message
         mem_ctx = await get_memory_service().gather_context(
@@ -420,7 +418,7 @@ async def _fetch_session_history(
             include_rag=False,
             include_physical=False,
             include_history=True,
-            max_history=_HOME_MAX_HISTORY,
+            max_history=settings.home_agent.max_history,
         )
         messages = [
             Message(role=h["role"], content=h["content"])
@@ -465,13 +463,14 @@ async def _generate_llm_response(state: HomeAgentState) -> dict[str, Any]:
         Message(role="user", content=input_text),
     ]
 
-    cuda_lock = get_cuda_lock()
-    async with cuda_lock:
-        result = llm.chat(
-            messages=messages,
-            max_tokens=150,
-            temperature=0.7,
-        )
+    from ...config import settings as _settings
+    ha_cfg = _settings.home_agent
+
+    result = llm.chat(
+        messages=messages,
+        max_tokens=ha_cfg.max_tokens,
+        temperature=ha_cfg.temperature,
+    )
 
     response = result.get("response", "").strip() or f"I heard: {input_text}"
     return {
@@ -511,6 +510,9 @@ async def _generate_llm_response_with_tools(state: HomeAgentState) -> dict[str, 
 
     history_messages = await _fetch_session_history(input_text, session_id)
 
+    from ...config import settings as _settings
+    ha_cfg = _settings.home_agent
+
     system_msg = "You are a helpful assistant. Use tools when needed."
     messages = [
         Message(role="system", content=system_msg),
@@ -524,15 +526,13 @@ async def _generate_llm_response_with_tools(state: HomeAgentState) -> dict[str, 
         target_tool = intent.target_name
         logger.info("Tool use with target: %s", target_tool)
 
-    cuda_lock = get_cuda_lock()
-    async with cuda_lock:
-        result = await execute_with_tools(
-            llm=llm,
-            messages=messages,
-            max_tokens=150,
-            temperature=0.3,
-            target_tool=target_tool,
-        )
+    result = await execute_with_tools(
+        llm=llm,
+        messages=messages,
+        max_tokens=ha_cfg.max_tokens,
+        temperature=ha_cfg.tool_temperature,
+        target_tool=target_tool,
+    )
 
     response = result.get("response", "").strip()
     tools_executed = result.get("tools_executed", [])

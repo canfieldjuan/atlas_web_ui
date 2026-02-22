@@ -77,9 +77,11 @@ async def _start_asr_server() -> subprocess.Popen | None:
         stderr=subprocess.PIPE,
     )
 
-    # Wait for health check (up to 120s for model loading)
-    logger.info("Waiting for ASR server to load model (pid=%d)...", proc.pid)
-    for attempt in range(240):
+    # Wait for health check
+    timeout_s = settings.voice.asr_startup_timeout
+    max_attempts = timeout_s * 2  # 0.5s per attempt
+    logger.info("Waiting for ASR server to load model (pid=%d, timeout=%ds)...", proc.pid, timeout_s)
+    for attempt in range(max_attempts):
         if proc.poll() is not None:
             stderr = proc.stderr.read().decode(errors="replace")
             logger.error("ASR server exited during startup: %s", stderr[-500:])
@@ -94,7 +96,7 @@ async def _start_asr_server() -> subprocess.Popen | None:
             pass
         await asyncio.sleep(0.5)
 
-    logger.error("ASR server failed to become ready after 120s")
+    logger.error("ASR server failed to become ready after %ds", timeout_s)
     proc.terminate()
     return None
 

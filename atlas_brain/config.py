@@ -694,6 +694,7 @@ class VoiceClientConfig(BaseSettings):
         description="ASR model name or path for auto-started server",
     )
     asr_device: str = Field(default="cuda", description="Torch device for ASR server (cuda, cuda:0, cpu)")
+    asr_startup_timeout: int = Field(default=120, ge=10, le=600, description="Seconds to wait for ASR server startup")
 
     # ASR streaming settings (WebSocket mode)
     asr_streaming_enabled: bool = Field(
@@ -1454,6 +1455,17 @@ class PersonaConfig(BaseSettings):
     owner_name: str = Field(default="Juan", description="Owner/user name for email sign-offs and personalization")
 
 
+class HomeAgentConfig(BaseSettings):
+    """Home agent LLM generation parameters."""
+
+    model_config = SettingsConfigDict(env_prefix="ATLAS_HOME_AGENT_")
+
+    max_tokens: int = Field(default=150, ge=50, le=1024, description="Max tokens for LLM response")
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Sampling temperature for conversation")
+    tool_temperature: float = Field(default=0.3, ge=0.0, le=2.0, description="Sampling temperature for tool calling")
+    max_history: int = Field(default=4, ge=0, le=20, description="Max conversation history turns to include")
+
+
 class AgentConfig(BaseSettings):
     """Agent system configuration."""
 
@@ -1820,6 +1832,7 @@ class Settings(BaseSettings):
     free_mode: FreeModeConfig = Field(default_factory=FreeModeConfig)
     entity_context: EntityContextConfig = Field(default_factory=EntityContextConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
+    home_agent: HomeAgentConfig = Field(default_factory=HomeAgentConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     workflows: WorkflowConfig = Field(default_factory=WorkflowConfig)
     orchestrated: OrchestratedConfig = Field(default_factory=OrchestratedConfig)

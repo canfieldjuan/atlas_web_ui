@@ -2,7 +2,11 @@
 Health check endpoints.
 """
 
+import logging
+
 from fastapi import APIRouter
+
+logger = logging.getLogger("atlas.api.health")
 
 router = APIRouter(tags=["Health"])
 
@@ -27,8 +31,9 @@ async def health():
                 "person_detected": detector._person_detected,
                 "source_id": detector.camera_source_id,
             }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Webcam detector health check failed: %s", e)
+        webcam_status["error"] = str(e)
 
     # Get presence status
     presence_status = {"current_room": None}
