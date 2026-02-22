@@ -1344,6 +1344,34 @@ class AtlasAgentGraph:
                 except Exception:
                     pass
 
+            # Workflow topic entity from workflow type
+            _WORKFLOW_NAMES = {
+                "reminder": "reminder",
+                "calendar": "calendar event",
+                "booking": "appointment",
+                "email": "email draft",
+                "security": "security alert",
+                "presence": "presence tracking",
+            }
+            _workflow_type_val = (
+                state.get("workflow_type")
+                or state.get("workflow_to_start")
+                or (state.get("active_workflow") or {}).get("workflow_type")
+            )
+            if action_type in ("workflow_start", "workflow_continuation", "workflow_started") and _workflow_type_val:
+                _wf_name = _WORKFLOW_NAMES.get(_workflow_type_val, _workflow_type_val)
+                _wf_action = (
+                    "set"
+                    if (action_type == "workflow_started" and not state.get("awaiting_user_input"))
+                    else "setting"
+                )
+                entities.append({
+                    "type": "topic",
+                    "name": _wf_name,
+                    "action": _wf_action,
+                    "source": "workflow",
+                })
+
             # Person entity from speaker
             if _speaker:
                 entities.append({"type": "person", "name": _speaker, "source": "speaker"})

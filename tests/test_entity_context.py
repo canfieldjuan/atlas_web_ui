@@ -551,6 +551,37 @@ class TestAtlasWiring:
         assert "assistant_metadata" in src
         assert "entities" in src
 
+    def test_workflow_entity_block_present(self):
+        assert "Workflow topic entity from workflow type" in self._source()
+
+    def test_workflow_action_types_covered(self):
+        src = self._source()
+        assert "workflow_start" in src
+        assert "workflow_continuation" in src
+        assert "workflow_started" in src
+
+    def test_workflow_names_map_present(self):
+        src = self._source()
+        assert "_WORKFLOW_NAMES" in src
+        assert "reminder" in src
+        assert "calendar event" in src
+        assert "appointment" in src
+
+    def test_workflow_type_resolved_from_all_state_keys(self):
+        src = self._source()
+        assert "workflow_type" in src
+        assert "workflow_to_start" in src
+        assert "active_workflow" in src
+
+    def test_workflow_entity_source_is_workflow(self):
+        src = self._source()
+        assert '"workflow"' in src
+
+    def test_workflow_action_set_when_complete(self):
+        src = self._source()
+        assert '"set"' in src
+        assert "awaiting_user_input" in src
+
 
 class TestLauncherWiring:
     """launcher.py injects entity context into prompt and persists person entity."""
