@@ -77,6 +77,8 @@ _DEFAULT_DOMAIN_MAP: dict[str, str] = {
     "twitter.com": "social",
     "instagram.com": "social",
     "x.com": "social",
+    # Lead / form submissions
+    "web3forms.com": "lead",
 }
 
 # ---------------------------------------------------------------------------
@@ -90,6 +92,7 @@ _SUBJECT_PATTERNS: list[tuple[str, str, Optional[str]]] = [
     (r"shipped|delivered|tracking|order.*confirm|your\s*order", "shopping", None),
     (r"boarding\s*pass|itinerary|flight|reservation.*confirm|check.in", "travel", None),
     (r"event\s*invite|rsvp|calendar|meeting\s*(invite|request)", "calendar", None),
+    (r"new\s*(form\s*)?submission|contact\s*form|website\s*(inquiry|lead|form)", "lead", "action_required"),
 ]
 
 
@@ -205,6 +208,9 @@ class EmailRuleClassifier:
         if any(kw in subj_lower for kw in action_keywords):
             return "action_required"
 
+        if category == "lead":
+            return "action_required"
+
         # Personal email from a real person (no unsubscribe, personal label)
         if (
             "CATEGORY_PERSONAL" in label_ids
@@ -248,9 +254,13 @@ class EmailRuleClassifier:
 
         Returns:
             False  - definitively not replyable (bulk, automated, noreply)
-            True   - definitively replyable (personal + action_required)
+            True   - definitively replyable (personal + action_required, leads)
             None   - ambiguous, needs LLM triage
         """
+        # Leads are always replyable -- the "from" is the form service
+        # (e.g. noreply@web3forms.com), not the actual submitter.
+        if category == "lead":
+            return True
         if has_unsubscribe:
             return False
         if EmailRuleClassifier._is_noreply_sender(sender):

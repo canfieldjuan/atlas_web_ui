@@ -8,7 +8,9 @@ a structured summary for LLM synthesis.
 
 import asyncio
 import base64
+import email.utils
 import logging
+import re
 import time
 from html.parser import HTMLParser
 from typing import Any
@@ -150,8 +152,8 @@ async def _record_processed_emails(emails: list[dict[str, Any]]) -> None:
         async with pool.transaction() as conn:
             await conn.executemany(
                 """
-                INSERT INTO processed_emails (gmail_message_id, sender, subject, category, priority, replyable)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                INSERT INTO processed_emails (gmail_message_id, sender, subject, category, priority, replyable, contact_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (gmail_message_id) DO NOTHING
                 """,
                 [
@@ -162,6 +164,7 @@ async def _record_processed_emails(emails: list[dict[str, Any]]) -> None:
                         e.get("category"),
                         e.get("priority"),
                         e.get("replyable"),
+                        e.get("_contact_id"),
                     )
                     for e in emails
                 ],
@@ -194,6 +197,14 @@ async def _send_action_email_notifications(emails: list[dict[str, Any]]) -> None
 
         sender_name = sender.split("<")[0].strip().strip('"') or sender
 
+        # Lead emails: override sender and notification style
+        is_lead = e.get("category") == "lead"
+        if is_lead:
+            lead_name = e.get("_lead_name", "")
+            lead_email = e.get("_lead_email", "")
+            if lead_name or lead_email:
+                sender_name = lead_name or lead_email
+
         message = f"From: {sender_name}\nSubject: {subject}\n\n{body_snippet}"
 
         actions = (
@@ -201,10 +212,17 @@ async def _send_action_email_notifications(emails: list[dict[str, Any]]) -> None
             f"view, View Email, https://mail.google.com/mail/u/0/#inbox/{gmail_msg_id}"
         )
 
+        if is_lead:
+            ntfy_title = f"New Lead: {subject[:60]}"
+            ntfy_tags = "email,star"
+        else:
+            ntfy_title = f"Action Required: {subject[:60]}"
+            ntfy_tags = "email,warning"
+
         headers = {
-            "Title": f"Action Required: {subject[:60]}",
+            "Title": ntfy_title,
             "Priority": "high",
-            "Tags": "email,warning",
+            "Tags": ntfy_tags,
             "Actions": actions,
         }
 
@@ -256,6 +274,93 @@ async def _get_email_graph_context(action_emails: list[dict[str, Any]]) -> list[
     except Exception as e:
         logger.debug("Email graph context fetch failed: %s", e)
         return []
+
+
+# ---------------------------------------------------------------------------
+# Lead (web form) processing helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_form_fields(body_text: str) -> dict[str, str]:
+    """Extract Name/Email/Phone/Message from web form body text (Key: Value lines)."""
+    fields: dict[str, str] = {}
+    for match in re.finditer(
+        r"^\s*(name|email|phone|message)\s*:\s*(.+)",
+        body_text, re.IGNORECASE | re.MULTILINE,
+    ):
+        key = match.group(1).lower()
+        value = match.group(2).strip()
+        if value:
+            fields[key] = value
+    return fields
+
+
+async def _process_lead_emails(emails: list[dict[str, Any]]) -> None:
+    """Create CRM contacts and log interactions for lead emails.
+
+    Only processes emails with category == "lead". For each:
+    1. Parse submitter email from Reply-To, fall back to body Email: field
+    2. Parse name/phone from body fields
+    3. find_or_create_contact(source="web", contact_type="lead")
+    4. log_interaction(type="email", summary="Web form submission: ...")
+    5. Stash _contact_id / _lead_name / _lead_email on the email dict
+
+    Fail-open: CRM errors never block the digest.
+    """
+    from ...services.crm_provider import get_crm_provider
+
+    lead_emails = [e for e in emails if e.get("category") == "lead"]
+    if not lead_emails:
+        return
+
+    crm = get_crm_provider()
+
+    for e in lead_emails:
+        try:
+            body_text = e.get("body_text", "")
+            fields = _parse_form_fields(body_text)
+
+            # Parse submitter email: prefer Reply-To header, fall back to body field
+            _, reply_to_email = email.utils.parseaddr(e.get("reply_to", ""))
+            submitter_email = reply_to_email or fields.get("email", "")
+            submitter_name = fields.get("name", "")
+            submitter_phone = fields.get("phone")
+
+            if not submitter_email and not submitter_name:
+                logger.debug("Lead email %s: no submitter info found, skipping CRM", e.get("id"))
+                continue
+
+            # Stash lead info for ntfy enrichment
+            e["_lead_name"] = submitter_name
+            e["_lead_email"] = submitter_email
+
+            contact = await crm.find_or_create_contact(
+                full_name=submitter_name or submitter_email,
+                email=submitter_email or None,
+                phone=submitter_phone,
+                source="web",
+                contact_type="lead",
+                tags=["web3forms"],
+            )
+            if not contact.get("id"):
+                logger.warning("Lead CRM contact has no ID for email %s", e.get("id"))
+                continue
+
+            contact_id = str(contact["id"])
+            e["_contact_id"] = contact_id
+
+            # Log the form submission as an interaction
+            subject = e.get("subject", "")
+            message_preview = fields.get("message", "")[:200]
+            await crm.log_interaction(
+                contact_id=contact_id,
+                interaction_type="email",
+                summary=f"Web form submission: {subject}. {message_preview}".strip(),
+            )
+            logger.info("Lead CRM: contact %s linked to email %s", contact_id, e.get("id"))
+
+        except Exception as exc:
+            logger.warning("Lead CRM processing failed for email %s: %s", e.get("id"), exc)
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +542,7 @@ class GmailClient:
         return {
             "id": data.get("id", msg_id),
             "from": header_map.get("from", ""),
+            "reply_to": header_map.get("reply-to", ""),
             "subject": header_map.get("subject", "(no subject)"),
             "date": header_map.get("date", ""),
             "snippet": data.get("snippet", ""),
@@ -555,6 +661,9 @@ async def run(task: ScheduledTask) -> dict:
 
     classifier = get_email_classifier()
     emails = classifier.classify_batch(emails)
+
+    # --- CRM processing for lead emails (web form submissions) ---
+    await _process_lead_emails(emails)
 
     # --- Record processed IDs before synthesis (crash-safe) ---
     await _record_processed_emails(emails)

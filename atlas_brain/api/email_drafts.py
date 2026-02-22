@@ -6,6 +6,7 @@ operations for LLM-generated email reply drafts.
 """
 
 import asyncio
+import email.utils
 import json
 import logging
 from datetime import datetime, timezone
@@ -190,6 +191,12 @@ async def approve_draft(draft_id: UUID):
         )
 
         logger.info("Draft %s approved and sent: gmail_id=%s", draft_id, gmail_sent_id)
+
+        # Log CRM interaction if the recipient is a known contact
+        try:
+            await _log_email_crm_interaction(reply_to_addr, row["draft_subject"], row["draft_body"])
+        except Exception as crm_exc:
+            logger.warning("CRM interaction log failed for draft %s: %s", draft_id, crm_exc)
 
         # Fire-and-forget confirmation notification (never raises)
         await _send_approval_notification(
@@ -625,6 +632,26 @@ async def skip_draft(draft_id: UUID):
 
     logger.info("Draft %s skipped (no redraft)", draft_id)
     return {"draft_id": str(draft_id), "status": "skipped"}
+
+
+async def _log_email_crm_interaction(
+    reply_to_addr: str, draft_subject: str, draft_body: str,
+) -> None:
+    """Log a CRM interaction when a draft reply is sent to a known contact."""
+    from ..services.crm_provider import get_crm_provider
+
+    _, clean_email = email.utils.parseaddr(reply_to_addr)
+    if not clean_email:
+        return
+    crm = get_crm_provider()
+    matches = await crm.search_contacts(email=clean_email)
+    if not matches:
+        return  # Only log if contact exists -- no auto-create here
+    await crm.log_interaction(
+        contact_id=str(matches[0]["id"]),
+        interaction_type="email",
+        summary=f"Sent reply: {draft_subject}. {draft_body[:200]}",
+    )
 
 
 async def _send_approval_notification(
