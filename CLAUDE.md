@@ -55,7 +55,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ LLM for conversations and reasoning
 - ✅ STT/TTS for voice interface
 - ✅ PostgreSQL for conversation persistence
-- ✅ Contacts CRM — `contacts` table + NocoDB browser UI (http://localhost:8080)
+- ✅ Contacts CRM — `contacts` table + NocoDB browser UI (http://localhost:8090)
 - ✅ CRM MCP server (9 tools)
 - ✅ Email MCP server (8 tools, provider-agnostic)
 
@@ -333,7 +333,7 @@ ATLAS_TOOLS_CALENDAR_CLIENT_SECRET=your_client_secret
 ATLAS_TOOLS_CALENDAR_REFRESH_TOKEN=your_refresh_token
 
 # NocoDB (browser UI over the contacts/appointments tables — no token needed for brain)
-# Admin UI: http://localhost:8080  (auto-discovers all Postgres tables)
+# Admin UI: http://localhost:8090  (auto-discovers all Postgres tables)
 
 # MCP Servers (Claude Desktop / Cursor integration)
 # Default transport is stdio. Set ATLAS_MCP_TRANSPORT=sse to expose as HTTP.
@@ -364,7 +364,7 @@ contact_interactions, appointments).  Atlas itself uses DatabaseCRMProvider
 docker compose up -d postgres nocodb
 
 # 2. Open the NocoDB UI
-open http://localhost:8080
+open http://localhost:8090
 
 # 3. On first launch, create an account, then connect to the existing DB:
 #    Source: Postgres | Host: postgres | Port: 5432 | DB: atlas | User: atlas
