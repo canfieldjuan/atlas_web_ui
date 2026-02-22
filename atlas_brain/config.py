@@ -1724,6 +1724,7 @@ class CallIntelligenceConfig(BaseSettings):
     asr_timeout: int = Field(default=60, ge=10, le=300, description="ASR request timeout")
     llm_max_tokens: int = Field(default=1024, ge=128, le=4096)
     llm_temperature: float = Field(default=0.3, ge=0.0, le=1.0)
+    llm_timeout: float = Field(default=30.0, ge=5.0, le=120.0, description="LLM call timeout in seconds")
     notify_enabled: bool = Field(default=True, description="Push ntfy after processing")
 
 

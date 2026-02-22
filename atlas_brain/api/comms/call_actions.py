@@ -288,7 +288,7 @@ async def book_appointment(transcript_id: UUID):
             desc_lines.append(f"Requested: {(date_str + ' ' + time_str).strip()}")
         description = "\n".join(desc_lines)
 
-        tz_name = ctx.hours.timezone if (ctx and ctx.hours) else "America/Chicago"
+        tz_name = ctx.hours.timezone if (ctx and ctx.hours) else settings.reminder.default_timezone
         start_dt = _parse_event_datetime(date_str, time_str, tz_name)
         end_dt = start_dt + timedelta(hours=1)
 
@@ -586,6 +586,15 @@ async def approve_plan(transcript_id: UUID):
         logger.warning("Plan execution notification failed: %s", e)
 
     ok_count = sum(1 for r in results if r["status"] == "ok")
+    fail_count = len(results) - ok_count
+    if fail_count:
+        failed_names = [r["action"] for r in results if r["status"] == "error"]
+        logger.warning(
+            "Plan execution for %s: %d OK, %d failed (%s)",
+            transcript_id, ok_count, fail_count, ", ".join(failed_names),
+        )
+    else:
+        logger.info("Plan execution for %s: all %d actions succeeded", transcript_id, ok_count)
     return JSONResponse({
         "status": "ok",
         "executed": ok_count,
@@ -656,11 +665,12 @@ async def _exec_book(
     services = ", ".join(data.get("services_mentioned") or []) or "Service"
     date_str = data.get("preferred_date") or ""
     time_str = data.get("preferred_time") or ""
+    frequency = data.get("frequency") or ""
 
     ctx_id = record.get("business_context_id") or ""
     ctx = get_context_router().get_context(ctx_id) if ctx_id else None
     calendar_id = (ctx.scheduling.calendar_id if ctx else None) or None
-    tz_name = ctx.hours.timezone if (ctx and ctx.hours) else "America/Chicago"
+    tz_name = ctx.hours.timezone if (ctx and ctx.hours) else settings.reminder.default_timezone
 
     summary = f"Estimate: {customer}"
     desc_lines = [f"Customer: {customer}", f"Phone: {phone}"]
@@ -669,6 +679,10 @@ async def _exec_book(
     if address:
         desc_lines.append(f"Address: {address}")
     desc_lines.append(f"Services: {services}")
+    if frequency:
+        desc_lines.append(f"Frequency: {frequency.replace('_', ' ').title()}")
+    if date_str or time_str:
+        desc_lines.append(f"Requested: {(date_str + ' ' + time_str).strip()}")
 
     start_dt = _parse_event_datetime(date_str, time_str, tz_name)
     end_dt = start_dt + timedelta(hours=1)
@@ -678,6 +692,8 @@ async def _exec_book(
         location=address or None, description="\n".join(desc_lines),
         calendar_id=calendar_id,
     )
+    if not result.success:
+        raise Exception(f"Calendar creation failed: {result.message}")
     return f"Booked: {start_dt.strftime('%Y-%m-%d %H:%M')}"
 
 

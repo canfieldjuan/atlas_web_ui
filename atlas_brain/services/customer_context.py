@@ -1,5 +1,5 @@
 """
-Customer Context Service — unified cross-reference layer.
+Customer Context Service -- unified cross-reference layer.
 
 Pulls together everything Atlas knows about a customer from CRM,
 call transcripts, appointments, sent emails, and interaction logs.
@@ -59,7 +59,7 @@ class CustomerContextService:
         """Build full customer context by contact_id.
 
         Fetches all data sources in parallel via asyncio.gather.
-        Each source is fail-open — a single failure doesn't block others.
+        Each source is fail-open -- a single failure doesn't block others.
         """
         from .crm_provider import get_crm_provider
 
@@ -167,9 +167,9 @@ class CustomerContextService:
         if not email_addr:
             return []
 
-        from ..storage.repositories.email import get_email_repository
+        from ..storage.repositories.email import get_email_repo
 
-        repo = get_email_repository()
+        repo = get_email_repo()
         results = await repo.query(to_address=email_addr, limit=limit)
         return [self._email_to_dict(e) for e in results]
 

@@ -152,9 +152,13 @@ async def generate_action_plan(
     result = await asyncio.wait_for(
         loop.run_in_executor(
             None,
-            lambda: llm.chat(messages=messages, max_tokens=1024, temperature=0.3),
+            lambda: llm.chat(
+                messages=messages,
+                max_tokens=settings.call_intelligence.llm_max_tokens,
+                temperature=settings.call_intelligence.llm_temperature,
+            ),
         ),
-        timeout=30.0,
+        timeout=settings.call_intelligence.llm_timeout,
     )
 
     text = result.get("response", "").strip()

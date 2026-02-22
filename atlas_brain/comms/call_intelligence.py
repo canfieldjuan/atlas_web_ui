@@ -291,7 +291,7 @@ async def _extract_call_data(
                 temperature=cfg.llm_temperature,
             ),
         ),
-        timeout=30.0,
+        timeout=cfg.llm_timeout,
     )
 
     text = result.get("response", "").strip()
@@ -396,7 +396,7 @@ async def _generate_action_plan(
 
     # Skip planning for calls with no actionable intent
     intent = extracted_data.get("intent", "")
-    if intent in ("personal_call", "wrong_number", "spam"):
+    if intent in ("personal_call", "wrong_number", "spam", "inquiry", "other", ""):
         return []
 
     # Build customer context (if we have a contact)
@@ -454,6 +454,9 @@ async def _link_to_crm(
         source="phone_call",
         source_ref=str(transcript_id),
     )
+    if not contact.get("id"):
+        logger.warning("CRM contact created but has no ID: %s", contact)
+        return None
     contact_id = str(contact["id"])
 
     # Link the call transcript to the contact

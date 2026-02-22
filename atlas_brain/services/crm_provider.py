@@ -28,7 +28,7 @@ logger = logging.getLogger("atlas.services.crm_provider")
 # ---------------------------------------------------------------------------
 
 class DatabaseCRMProvider:
-    """CRM provider — queries the `contacts` table directly via asyncpg."""
+    """CRM provider -- queries the `contacts` table directly via asyncpg."""
 
     async def health_check(self) -> bool:
         try:
@@ -79,7 +79,7 @@ class DatabaseCRMProvider:
                 return merged or existing
             return existing
 
-        # --- no existing contact — insert ---
+        # --- no existing contact -- insert ---
         from ..storage.database import get_db_pool
 
         pool = get_db_pool()
@@ -116,7 +116,7 @@ class DatabaseCRMProvider:
             data.get("source", "manual"),
             data.get("source_ref"),
             now,   # created_at ($18)
-            now,   # updated_at ($19) — same value on insert
+            now,   # updated_at ($19) -- same value on insert
             metadata_json,
         )
         return dict(row) if row else {}
