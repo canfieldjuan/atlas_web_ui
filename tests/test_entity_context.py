@@ -562,11 +562,13 @@ class TestAtlasWiring:
         assert "workflow_started" in src
 
     def test_workflow_names_map_present(self):
-        src = self._source()
-        assert "_WORKFLOW_NAMES" in src
-        assert "reminder" in src
-        assert "calendar event" in src
-        assert "appointment" in src
+        # Dict is now module-level; _store_turn source only references it by name
+        import atlas_brain.agents.graphs.atlas as mod
+        src_module = inspect.getsource(mod)
+        assert "_WORKFLOW_NAMES" in src_module
+        assert '"reminder"' in src_module
+        assert '"calendar event"' in src_module
+        assert '"appointment"' in src_module
 
     def test_workflow_type_resolved_from_all_state_keys(self):
         src = self._source()
@@ -582,6 +584,62 @@ class TestAtlasWiring:
         src = self._source()
         assert '"set"' in src
         assert "awaiting_user_input" in src
+
+    def test_location_checked_from_input_text(self):
+        """Location extraction must check input_text (not only response_text)."""
+        src = self._source()
+        assert "input_text" in src
+        assert "_loc_text" in src or "for _loc_text" in src
+
+    def test_location_breaks_after_first_match(self):
+        """Location loop breaks after first match (one location per turn)."""
+        assert "break  # one location per turn" in self._source()
+
+    def test_topic_fallback_via_extract_topic(self):
+        """When intent.target_name is empty, extract_topic_from_text is called as fallback."""
+        src = self._source()
+        assert "extract_topic_from_text" in src
+        assert "not _topic_name" in src
+
+    def test_workflow_names_is_module_level(self):
+        """_WORKFLOW_NAMES must be a module-level constant, not redeclared per call."""
+        import atlas_brain.agents.graphs.atlas as mod
+        src_module = inspect.getsource(mod)
+        # Should appear at module level (before class definition)
+        class_pos = src_module.index("class AtlasAgentGraph")
+        dict_pos = src_module.index("_WORKFLOW_NAMES")
+        assert dict_pos < class_pos, "_WORKFLOW_NAMES should be module-level"
+
+
+class TestEntityOrderingFix:
+    """Newest entity wins dedup when same device is mentioned in multiple turns."""
+
+    def test_newest_first_iteration(self):
+        """collect_recent_entities keeps first occurrence; entities must be newest-first."""
+        entities_newest_first = [
+            {"type": "device", "name": "bedroom light", "action": "turn_on", "source": "command"},   # newest
+            {"type": "device", "name": "bedroom light", "action": "turn_off", "source": "command"},  # older
+        ]
+        refs = collect_recent_entities(entities_newest_first)
+        assert len(refs) == 1
+        assert refs[0].action == "turn_on"
+
+    def test_oldest_first_would_be_wrong(self):
+        """Verify the opposite ordering would give the wrong result (regression guard)."""
+        entities_oldest_first = [
+            {"type": "device", "name": "bedroom light", "action": "turn_off", "source": "command"},  # old
+            {"type": "device", "name": "bedroom light", "action": "turn_on", "source": "command"},   # new
+        ]
+        refs = collect_recent_entities(entities_oldest_first)
+        # First occurrence (old) wins -- this is why we must supply newest-first
+        assert refs[0].action == "turn_off"
+
+    def test_load_recent_entities_uses_reversed(self):
+        """_load_recent_entities must iterate reversed(turns) for newest-first order."""
+        import inspect
+        from atlas_brain.memory.service import MemoryService
+        src = inspect.getsource(MemoryService._load_recent_entities)
+        assert "reversed(turns)" in src
 
 
 class TestLauncherWiring:

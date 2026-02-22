@@ -281,7 +281,7 @@ class MemoryService:
             max_age_s = _settings.entity_context.max_age_s
             now = datetime.now(_tz.utc)
             entities = []
-            for t in turns:
+            for t in reversed(turns):  # newest-first so dedup keeps latest action
                 if max_age_s > 0 and t.created_at:
                     # created_at from asyncpg may be naive (UTC) -- normalise
                     ts = t.created_at

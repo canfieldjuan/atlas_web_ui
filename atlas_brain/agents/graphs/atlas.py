@@ -58,6 +58,16 @@ _CANCEL_PATTERNS = [
 ]
 
 
+_WORKFLOW_NAMES: dict[str, str] = {
+    "reminder": "reminder",
+    "calendar": "calendar event",
+    "booking": "appointment",
+    "email": "email draft",
+    "security": "security alert",
+    "presence": "presence tracking",
+}
+
+
 def _is_cancel_intent(text: str) -> bool:
     """Check if text matches a cancel pattern."""
     text = text.strip()
@@ -1325,34 +1335,40 @@ class AtlasAgentGraph:
                             "action": intent_obj.action or "",
                             "source": "command",
                         })
-                elif action_type == "tool_use" and intent_obj.target_name:
-                    entities.append({
-                        "type": "topic",
-                        "name": intent_obj.target_name,
-                        "action": intent_obj.action or "",
-                        "source": "tool",
-                    })
+                elif action_type == "tool_use":
+                    _topic_name = intent_obj.target_name
+                    if not _topic_name:
+                        # Fallback: infer topic from transcript (mirrors launcher.py streaming path)
+                        try:
+                            from ...voice.entity_context import extract_topic_from_text
+                            _topic_name = extract_topic_from_text(
+                                state.get("input_text", "") or ""
+                            )
+                        except Exception:
+                            pass
+                    if _topic_name:
+                        entities.append({
+                            "type": "topic",
+                            "name": _topic_name,
+                            "action": intent_obj.action or "",
+                            "source": "tool",
+                        })
 
-            # Location from response text
+            # Location from user input then response text (first match wins, mirrors launcher.py)
+            _input_text = state.get("input_text", "") or ""
             response_text = state.get("response", "") or ""
-            if response_text:
-                try:
-                    from ...voice.entity_context import extract_location_from_text
-                    location = extract_location_from_text(response_text)
-                    if location:
-                        entities.append({"type": "location", "name": location, "source": "text"})
-                except Exception:
-                    pass
+            for _loc_text in (_input_text, response_text):
+                if _loc_text:
+                    try:
+                        from ...voice.entity_context import extract_location_from_text
+                        location = extract_location_from_text(_loc_text)
+                        if location:
+                            entities.append({"type": "location", "name": location, "source": "text"})
+                            break  # one location per turn
+                    except Exception:
+                        pass
 
             # Workflow topic entity from workflow type
-            _WORKFLOW_NAMES = {
-                "reminder": "reminder",
-                "calendar": "calendar event",
-                "booking": "appointment",
-                "email": "email draft",
-                "security": "security alert",
-                "presence": "presence tracking",
-            }
             _workflow_type_val = (
                 state.get("workflow_type")
                 or state.get("workflow_to_start")
