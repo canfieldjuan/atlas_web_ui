@@ -29,6 +29,7 @@ class CustomerContext:
     appointments: list[dict[str, Any]] = field(default_factory=list)
     call_transcripts: list[dict[str, Any]] = field(default_factory=list)
     sent_emails: list[dict[str, Any]] = field(default_factory=list)
+    inbox_emails: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def contact_id(self) -> Optional[str]:
@@ -140,9 +141,13 @@ class CustomerContextService:
             self._get_sent_emails(contact, max_emails),
             "sent_emails",
         )
+        inbox_coro = _safe(
+            self._get_inbox_emails(contact, max_emails),
+            "inbox_emails",
+        )
 
-        interactions, appointments, calls, emails = await asyncio.gather(
-            interactions_coro, appointments_coro, calls_coro, emails_coro,
+        interactions, appointments, calls, emails, inbox = await asyncio.gather(
+            interactions_coro, appointments_coro, calls_coro, emails_coro, inbox_coro,
         )
 
         return CustomerContext(
@@ -151,6 +156,7 @@ class CustomerContextService:
             appointments=appointments[:max_appointments],
             call_transcripts=calls,
             sent_emails=emails,
+            inbox_emails=inbox,
         )
 
     async def _get_sent_emails(
@@ -166,6 +172,33 @@ class CustomerContextService:
         repo = get_email_repository()
         results = await repo.query(to_address=email_addr, limit=limit)
         return [self._email_to_dict(e) for e in results]
+
+    async def _get_inbox_emails(
+        self, contact: dict, limit: int,
+    ) -> list[dict]:
+        """
+        Find recent inbound emails from this contact via IMAP/Gmail.
+
+        Searches for messages where the sender matches the contact's email address.
+        Uses CompositeEmailProvider (IMAP preferred; Gmail API fallback).
+        Fail-open: returns [] if email address is missing or provider unavailable.
+        """
+        email_addr = contact.get("email")
+        if not email_addr:
+            return []
+
+        try:
+            from .email_provider import get_email_provider
+
+            provider = get_email_provider()
+            messages = await provider.list_messages(
+                query=f"from:{email_addr}",
+                max_results=limit,
+            )
+            return messages
+        except Exception as exc:
+            logger.debug("_get_inbox_emails failed for %s: %s", email_addr, exc)
+            return []
 
     @staticmethod
     def _email_to_dict(email) -> dict:
