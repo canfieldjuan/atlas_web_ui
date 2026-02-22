@@ -74,6 +74,12 @@ class WeatherTool:
                 description="Longitude of location",
                 required=False,
             ),
+            ToolParameter(
+                name="days_ahead",
+                param_type="integer",
+                description="Days ahead for forecast (0=today/current, 1=tomorrow, 2=day after tomorrow, etc.)",
+                required=False,
+            ),
         ]
 
     @property
@@ -107,9 +113,10 @@ class WeatherTool:
 
         lat = params.get("latitude", self._config.weather_default_lat)
         lon = params.get("longitude", self._config.weather_default_lon)
+        days_ahead = int(params.get("days_ahead", 0))
 
         try:
-            weather_data = await self._fetch_weather(lat, lon)
+            weather_data = await self._fetch_weather(lat, lon, days_ahead)
             return ToolResult(
                 success=True,
                 data=weather_data,
@@ -130,50 +137,112 @@ class WeatherTool:
                 message=str(e),
             )
 
-    async def _fetch_weather(self, lat: float, lon: float) -> dict[str, Any]:
+    async def _fetch_weather(self, lat: float, lon: float, days_ahead: int = 0) -> dict[str, Any]:
         """Fetch weather data from Open-Meteo API."""
         client = await self._ensure_client()
-
         temp_unit = self._config.weather_units
-        params = {
-            "latitude": lat,
-            "longitude": lon,
-            "current_weather": "true",
-            "temperature_unit": temp_unit,
-            "windspeed_unit": "mph",
-        }
 
-        response = await client.get(API_BASE_URL, params=params)
-        response.raise_for_status()
-        data = response.json()
-
-        current = data.get("current_weather", {})
-        weather_code = current.get("weathercode", 0)
-
-        return {
-            "temperature": current.get("temperature"),
-            "unit": "F" if temp_unit == "fahrenheit" else "C",
-            "windspeed": current.get("windspeed"),
-            "wind_unit": "mph",
-            "condition": WMO_CODES.get(weather_code, "Unknown"),
-            "condition_code": weather_code,
-            "is_day": current.get("is_day", 1) == 1,
-            "latitude": lat,
-            "longitude": lon,
-        }
+        if days_ahead <= 0:
+            # Current conditions
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "current_weather": "true",
+                "temperature_unit": temp_unit,
+                "windspeed_unit": "mph",
+            }
+            response = await client.get(API_BASE_URL, params=params)
+            response.raise_for_status()
+            data = response.json()
+            current = data.get("current_weather", {})
+            weather_code = current.get("weathercode", 0)
+            return {
+                "temperature": current.get("temperature"),
+                "unit": "F" if temp_unit == "fahrenheit" else "C",
+                "windspeed": current.get("windspeed"),
+                "wind_unit": "mph",
+                "condition": WMO_CODES.get(weather_code, "Unknown"),
+                "condition_code": weather_code,
+                "is_day": current.get("is_day", 1) == 1,
+                "latitude": lat,
+                "longitude": lon,
+                "forecast": False,
+            }
+        else:
+            # Daily forecast
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "daily": "temperature_2m_max,temperature_2m_min,weathercode,precipitation_probability_max",
+                "temperature_unit": temp_unit,
+                "windspeed_unit": "mph",
+                "timezone": "auto",
+                "forecast_days": min(days_ahead + 1, 16),
+            }
+            response = await client.get(API_BASE_URL, params=params)
+            response.raise_for_status()
+            data = response.json()
+            daily = data.get("daily", {})
+            times = daily.get("time", [])
+            idx = min(days_ahead, len(times) - 1)
+            weather_code = (daily.get("weathercode") or [0])[idx]
+            return {
+                "temp_max": (daily.get("temperature_2m_max") or [None])[idx],
+                "temp_min": (daily.get("temperature_2m_min") or [None])[idx],
+                "unit": "F" if temp_unit == "fahrenheit" else "C",
+                "condition": WMO_CODES.get(weather_code, "Unknown"),
+                "condition_code": weather_code,
+                "precipitation_probability": (daily.get("precipitation_probability_max") or [None])[idx],
+                "date": times[idx] if idx < len(times) else None,
+                "days_ahead": days_ahead,
+                "latitude": lat,
+                "longitude": lon,
+                "forecast": True,
+            }
 
     def _format_message(self, data: dict[str, Any]) -> str:
         """Format weather data as human-readable message."""
-        temp = data.get("temperature", "N/A")
-        unit = data.get("unit", "F")
-        condition = data.get("condition", "Unknown")
-        wind = data.get("windspeed", "N/A")
-        wind_unit = data.get("wind_unit", "mph")
+        if data.get("forecast"):
+            # Forecast day
+            days_ahead = data.get("days_ahead", 1)
+            date_str = data.get("date", "")
+            temp_max = data.get("temp_max", "N/A")
+            temp_min = data.get("temp_min", "N/A")
+            unit = data.get("unit", "F")
+            condition = data.get("condition", "Unknown")
+            precip = data.get("precipitation_probability")
 
-        return (
-            f"Currently {temp}{unit} and {condition.lower()}. "
-            f"Wind: {wind} {wind_unit}."
-        )
+            if days_ahead == 1:
+                day_label = "Tomorrow"
+            elif days_ahead == 2:
+                day_label = "The day after tomorrow"
+            elif date_str:
+                try:
+                    from datetime import date as _date
+                    day_label = _date.fromisoformat(date_str).strftime("%A")
+                except ValueError:
+                    day_label = f"In {days_ahead} days"
+            else:
+                day_label = f"In {days_ahead} days"
+
+            msg = (
+                f"{day_label}: {condition.lower()}, "
+                f"high of {temp_max}{unit}, low of {temp_min}{unit}."
+            )
+            if precip is not None:
+                msg += f" {int(precip)}% chance of precipitation."
+            return msg
+        else:
+            # Current conditions
+            temp = data.get("temperature", "N/A")
+            unit = data.get("unit", "F")
+            condition = data.get("condition", "Unknown")
+            wind = data.get("windspeed", "N/A")
+            wind_unit = data.get("wind_unit", "mph")
+            return (
+                f"Currently {temp}{unit} and {condition.lower()}. "
+                f"Wind: {wind} {wind_unit}."
+            )
 
 
 # Module-level instance

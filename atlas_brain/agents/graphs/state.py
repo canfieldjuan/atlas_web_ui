@@ -75,6 +75,9 @@ class AgentState(TypedDict, total=False):
     # Tool results
     tool_results: dict[str, Any]
 
+    # Params extracted from query for fast-path tool execution (e.g. days_ahead for weather)
+    tool_params: Optional[dict]
+
     # Final response
     response: str
 

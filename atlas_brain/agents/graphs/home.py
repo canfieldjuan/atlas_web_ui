@@ -115,6 +115,8 @@ async def classify_intent(state: HomeAgentState) -> HomeAgentState:
         "confidence": confidence,
         "needs_llm": needs_llm,
         "classify_ms": classify_ms,
+        "tools_to_call": tools_to_call,
+        "tool_params": getattr(route_result, "tool_params", {}) if route_result else {},
     }
 
 
@@ -257,7 +259,7 @@ async def execute_action(state: HomeAgentState) -> HomeAgentState:
         if tools_to_call:
             tool_name = tools_to_call[0]
             try:
-                tool_result = await tools.execute_tool(tool_name, {})
+                tool_result = await tools.execute_tool(tool_name, state.get("tool_params") or {})
                 result = ActionResult(
                     success=tool_result.get("success", False),
                     message=tool_result.get("message", ""),
