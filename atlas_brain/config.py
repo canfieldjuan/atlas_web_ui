@@ -1748,6 +1748,43 @@ class TemporalPatternConfig(BaseSettings):
     failure_cooldown: float = Field(default=60.0, ge=0.0, le=600.0, description="Seconds to suppress DB retries after failure")
 
 
+class DirectusConfig(BaseSettings):
+    """Directus CRM configuration.
+
+    Directus connects to the existing atlas_postgres instance and manages the
+    `contacts` and `contact_interactions` collections as the CRM single source
+    of truth.  When `enabled=False` the DatabaseCRMProvider falls back to
+    direct asyncpg queries against the same tables.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="ATLAS_DIRECTUS_", env_file=".env", extra="ignore")
+
+    enabled: bool = Field(default=False, description="Enable Directus CRM backend")
+    url: str = Field(default="http://localhost:8055", description="Directus instance URL")
+    token: Optional[str] = Field(default=None, description="Static admin token for Directus API auth")
+    admin_email: str = Field(default="admin@atlas.local", description="Admin email for Directus setup")
+    admin_password: Optional[str] = Field(default=None, description="Admin password for Directus setup")
+    timeout: float = Field(default=10.0, description="HTTP request timeout in seconds")
+
+
+class MCPConfig(BaseSettings):
+    """MCP server configuration.
+
+    Both the CRM and Email MCP servers default to stdio transport (Claude
+    Desktop / Cursor compatible).  Set transport='sse' to expose them as HTTP
+    endpoints instead.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="ATLAS_MCP_", env_file=".env", extra="ignore")
+
+    crm_enabled: bool = Field(default=True, description="Enable CRM MCP server")
+    email_enabled: bool = Field(default=True, description="Enable Email MCP server")
+    transport: str = Field(default="stdio", description="MCP transport: stdio or sse")
+    host: str = Field(default="0.0.0.0", description="Bind host for SSE transport")
+    crm_port: int = Field(default=8056, description="Port for CRM MCP server (SSE transport)")
+    email_port: int = Field(default=8057, description="Port for Email MCP server (SSE transport)")
+
+
 class Settings(BaseSettings):
     """Application-wide settings."""
 
@@ -1826,6 +1863,8 @@ class Settings(BaseSettings):
     call_intelligence: CallIntelligenceConfig = Field(default_factory=CallIntelligenceConfig)
     openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
     ftl_tracing: FTLTracingConfig = Field(default_factory=FTLTracingConfig)
+    directus: DirectusConfig = Field(default_factory=DirectusConfig)
+    mcp: MCPConfig = Field(default_factory=MCPConfig)
 
     # Presence tracking - imported from presence module
     @property
