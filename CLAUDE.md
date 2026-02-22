@@ -184,10 +184,10 @@ curl -X POST http://127.0.0.1:8000/api/v1/query/audio \
 # List available VLM models
 curl http://127.0.0.1:8000/api/v1/models/vlm
 
-# Hot-swap VLM model
+# Hot-swap VLM model (no built-in VLM registered by default; add one in services/vlm/)
 curl -X POST http://127.0.0.1:8000/api/v1/models/vlm/activate \
   -H "Content-Type: application/json" \
-  -d '{"name": "moondream"}'
+  -d '{"name": "my-model"}'
 
 # List registered devices
 curl http://127.0.0.1:8000/api/v1/devices/
@@ -229,8 +229,9 @@ atlas_brain/
 │   ├── protocols.py             # VLMService, STTService protocols
 │   ├── base.py                  # BaseModelService with shared utilities
 │   ├── registry.py              # ServiceRegistry for hot-swapping
-│   ├── vlm/
-│   │   └── moondream.py         # @register_vlm("moondream")
+│   ├── crm_provider.py          # CRM: DirectusCRMProvider + DatabaseCRMProvider
+│   ├── email_provider.py        # Email: GmailEmailProvider + ResendEmailProvider
+│   ├── vlm/                     # VLM implementations (none built-in; add yours here)
 │   └── stt/
 │       └── nemotron.py          # @register_stt("nemotron")
 │
@@ -238,7 +239,7 @@ atlas_brain/
     ├── protocols.py             # Capability, CapabilityState, ActionResult
     ├── registry.py              # CapabilityRegistry
     ├── actions.py               # ActionDispatcher, Intent
-    ├── intent_parser.py         # VLM → Intent extraction
+    ├── intent_parser.py         # LLM → Intent extraction
     ├── backends/                # Communication backends
     │   ├── base.py              # Backend protocol
     │   ├── mqtt.py              # MQTTBackend
@@ -246,6 +247,10 @@ atlas_brain/
     └── devices/                 # Device implementations
         ├── lights.py            # MQTTLight, HomeAssistantLight
         └── switches.py          # MQTTSwitch, HomeAssistantSwitch
+
+atlas_brain/mcp/                 # MCP servers (Claude Desktop / Cursor compatible)
+├── crm_server.py                # CRM MCP server  (9 tools, port 8056 SSE)
+└── email_server.py              # Email MCP server (8 tools, port 8057 SSE)
 ```
 
 ## Key Patterns
@@ -253,8 +258,24 @@ atlas_brain/
 **Service Registry**: AI models are managed via registries that support runtime hot-swapping:
 ```python
 from atlas_brain.services import vlm_registry
-vlm_registry.activate("moondream")  # Load model
-vlm_registry.deactivate()            # Unload to free VRAM
+vlm_registry.activate("my-model")  # Load a registered VLM implementation
+vlm_registry.deactivate()           # Unload to free VRAM
+```
+
+**CRM Provider**: Single source of truth for all customer/contact data:
+```python
+from atlas_brain.services.crm_provider import get_crm_provider
+crm = get_crm_provider()                       # DirectusCRMProvider or DatabaseCRMProvider
+contacts = await crm.search_contacts(phone="618-555-1234")
+await crm.log_interaction(contact_id, "call", "Booked cleaning for Monday")
+```
+
+**Email Provider**: Provider-agnostic send + read (Gmail preferred, Resend fallback):
+```python
+from atlas_brain.services.email_provider import get_email_provider
+email = get_email_provider()
+await email.send(to=["alice@example.com"], subject="Estimate", body="...")
+messages = await email.list_messages("is:unread newer_than:1d")
 ```
 
 **Capability System**: Devices implement the Capability protocol and are registered:
@@ -270,9 +291,11 @@ intent = await intent_parser.parse("turn on the lights")
 result = await action_dispatcher.dispatch_intent(intent)
 ```
 
-## Adding New Models
+## Adding New VLM Models
 
-Create a new file in `services/vlm/` or `services/stt/`:
+The `moondream` VLM was removed (it required PIL/transformers and was unused).
+To add a new VLM, create a file in `services/vlm/` and register it:
+
 ```python
 from ..registry import register_vlm
 from ..base import BaseModelService
@@ -284,6 +307,8 @@ class MyVLM(BaseModelService):
     def process_text(self, query): ...
     async def process_vision(self, image_bytes, prompt): ...
 ```
+
+Then set `ATLAS_VLM_DEFAULT_MODEL=my-model` and `ATLAS_LOAD_VLM_ON_STARTUP=true`.
 
 ## Adding New Device Types
 
@@ -302,9 +327,9 @@ class ThermostatCapability:
 
 ```bash
 # AI Models
-ATLAS_VLM_DEFAULT_MODEL=moondream
+# ATLAS_VLM_DEFAULT_MODEL=     # No VLM registered by default; add one in services/vlm/
+ATLAS_LOAD_VLM_ON_STARTUP=false
 ATLAS_STT_WHISPER_MODEL_SIZE=small.en
-ATLAS_LOAD_VLM_ON_STARTUP=true
 ATLAS_LOAD_STT_ON_STARTUP=false
 ATLAS_LLM_OLLAMA_MODEL=qwen3:14b
 ATLAS_LLM_CLOUD_ENABLED=true
@@ -330,6 +355,101 @@ ATLAS_TOOLS_CALENDAR_ENABLED=true
 ATLAS_TOOLS_CALENDAR_CLIENT_ID=your_client_id
 ATLAS_TOOLS_CALENDAR_CLIENT_SECRET=your_client_secret
 ATLAS_TOOLS_CALENDAR_REFRESH_TOKEN=your_refresh_token
+
+# Directus CRM (single source of truth for customer/contact data)
+# Run `python scripts/setup_directus.py` after first `docker compose up -d directus`
+# to auto-generate the token and write it to .env.local
+ATLAS_DIRECTUS_ENABLED=false           # set true after running setup_directus.py
+ATLAS_DIRECTUS_URL=http://localhost:8055
+ATLAS_DIRECTUS_TOKEN=                  # written by setup_directus.py
+ATLAS_DIRECTUS_ADMIN_EMAIL=admin@atlas.local
+ATLAS_DIRECTUS_ADMIN_PASSWORD=atlas_admin_password
+ATLAS_DIRECTUS_SECRET=change-me-in-production   # used by Directus container
+
+# MCP Servers (Claude Desktop / Cursor integration)
+# Default transport is stdio. Set ATLAS_MCP_TRANSPORT=sse to expose as HTTP.
+ATLAS_MCP_TRANSPORT=stdio
+ATLAS_MCP_CRM_PORT=8056    # CRM MCP server (SSE mode only)
+ATLAS_MCP_EMAIL_PORT=8057  # Email MCP server (SSE mode only)
+```
+
+## Directus CRM Setup
+
+Directus is the single source of truth for all customer/contact data, replacing
+the previous approach of inferring customer records from appointment rows and
+GraphRAG accumulation.
+
+```bash
+# 1. Start Postgres + Directus
+docker compose up -d postgres directus
+
+# 2. Wait until Directus is ready (look for "Server started at …")
+docker compose logs -f directus
+
+# 3. Create API token and write to .env.local
+python scripts/setup_directus.py
+
+# 4. Re-start brain with DirectusCRMProvider active
+docker compose restart brain
+
+# Directus Admin UI (manage contacts, interactions, etc.)
+open http://localhost:8055/admin
+```
+
+The `contacts` table (created by migration `035_contacts.sql`) is the CRM schema.
+Until `ATLAS_DIRECTUS_ENABLED=true` + `ATLAS_DIRECTUS_TOKEN` are set, Atlas
+automatically falls back to `DatabaseCRMProvider` (direct asyncpg queries against
+the same `contacts` table).
+
+## MCP Servers
+
+Two provider-agnostic MCP servers expose the CRM and email to any MCP client
+(Claude Desktop, Cursor, custom agents).
+
+### CRM MCP Server (9 tools)
+```bash
+# stdio mode (Claude Desktop / Cursor)
+python -m atlas_brain.mcp.crm_server
+
+# SSE HTTP mode (port 8056)
+python -m atlas_brain.mcp.crm_server --sse
+```
+
+Tools: `search_contacts`, `get_contact`, `create_contact`, `update_contact`,
+`delete_contact`, `list_contacts`, `log_interaction`, `get_interactions`,
+`get_contact_appointments`
+
+### Email MCP Server (8 tools)
+```bash
+# stdio mode (Claude Desktop / Cursor)
+python -m atlas_brain.mcp.email_server
+
+# SSE HTTP mode (port 8057)
+python -m atlas_brain.mcp.email_server --sse
+```
+
+Tools: `send_email`, `send_estimate`, `send_proposal`, `list_inbox`,
+`get_message`, `search_inbox`, `get_thread`, `list_sent_history`
+
+**Sending**: Gmail preferred (OAuth2); falls back to Resend if Gmail is not configured.
+**Reading**: Gmail only (`list_inbox`, `search_inbox`, `get_thread`).
+
+### Claude Desktop config (`~/.claude/claude_desktop_config.json`)
+```json
+{
+  "mcpServers": {
+    "atlas-crm": {
+      "command": "python",
+      "args": ["-m", "atlas_brain.mcp.crm_server"],
+      "cwd": "/path/to/ATLAS"
+    },
+    "atlas-email": {
+      "command": "python",
+      "args": ["-m", "atlas_brain.mcp.email_server"],
+      "cwd": "/path/to/ATLAS"
+    }
+  }
+}
 ```
 
 ## Environment Requirements

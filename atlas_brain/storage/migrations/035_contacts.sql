@@ -103,7 +103,4 @@ COMMENT ON COLUMN contacts.source_ref IS
 COMMENT ON COLUMN appointments.contact_id IS
     'CRM contact this appointment belongs to; NULL for legacy rows not yet linked';
 
--- Record migration
-INSERT INTO schema_migrations (version, name)
-VALUES (35, '035_contacts')
-ON CONFLICT (version) DO NOTHING;
+
