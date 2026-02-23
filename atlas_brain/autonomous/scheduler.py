@@ -375,6 +375,15 @@ class TaskScheduler:
                 "mailbox": "[Gmail]/Sent Mail",
             },
         },
+        {
+            "name": "email_auto_approve",
+            "description": "Auto-approve and send eligible email drafts after delay window",
+            "task_type": "builtin",
+            "schedule_type": "interval",
+            "interval_seconds": 120,
+            "timeout_seconds": 60,
+            "metadata": {"builtin_handler": "email_auto_approve"},
+        },
     ]
 
     async def _ensure_default_tasks(self) -> None:

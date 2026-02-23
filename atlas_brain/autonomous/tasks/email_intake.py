@@ -317,6 +317,7 @@ async def _classify_and_plan(emails: list[dict[str, Any]]) -> int:
 
             e["_intent"] = parsed["intent"]
             e["_sentiment"] = parsed["sentiment"]
+            e["_confidence"] = parsed["confidence"]
 
             # Store action plan if there are real actions
             if parsed["actions"] and parsed["actions"][0].get("action") != "none":
@@ -413,6 +414,12 @@ async def _send_enriched_notifications(emails: list[dict[str, Any]]) -> None:
             else "https://mail.google.com/mail/u/0/#inbox"
         )
 
+        # Skip auto-executed emails -- action handlers (generate_quote,
+        # show_slots, send_info, archive_email) already sent their own
+        # ntfy notifications.  Sending another here would be a duplicate.
+        if e.get("_auto_executed", False):
+            continue
+
         # Intent-aware buttons and metadata
         intent_cfg = _INTENT_NTFY.get(intent) if intent else None
 
@@ -505,7 +512,10 @@ async def _record_with_action_plans(emails: list[dict[str, Any]]) -> None:
                         e.get("priority"),
                         e.get("replyable"),
                         e.get("_contact_id"),
-                        json.dumps(e["_action_plan"]) if e.get("_action_plan") else None,
+                        json.dumps({
+                            "confidence": e.get("_confidence", 0.5),
+                            "actions": e["_action_plan"],
+                        }) if e.get("_action_plan") else None,
                         e.get("_customer_summary"),
                         e.get("_intent"),
                     )
@@ -515,6 +525,77 @@ async def _record_with_action_plans(emails: list[dict[str, Any]]) -> None:
         logger.debug("Recorded %d processed email IDs (with intent + action plans)", len(emails))
     except Exception as e:
         logger.warning("Failed to record processed emails: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# Auto-execute high-confidence intent actions
+# ---------------------------------------------------------------------------
+
+async def _auto_execute_actions(
+    emails: list[dict[str, Any]], cfg: Any,
+) -> int:
+    """Auto-execute intent actions for emails above the confidence threshold.
+
+    Skips complaint intent unconditionally.  Returns count of auto-executed.
+    """
+    from ...api.email_actions import (
+        archive_email,
+        generate_quote,
+        send_info,
+        show_slots,
+    )
+
+    executed = 0
+    for e in emails:
+        intent = e.get("_intent")
+        confidence = e.get("_confidence", 0.0)
+        if not intent:
+            continue
+
+        # Hard safety rail: never auto-execute complaints
+        if intent == "complaint":
+            continue
+
+        if intent not in cfg.auto_execute_intents:
+            continue
+
+        if confidence < cfg.auto_execute_min_confidence:
+            continue
+
+        msg_id = e.get("id", "")
+        if not msg_id:
+            continue
+
+        try:
+            if intent == "estimate_request":
+                await generate_quote(msg_id)
+            elif intent == "reschedule":
+                await show_slots(msg_id)
+            elif intent == "info_admin":
+                replyable = e.get("replyable")
+                if replyable is True:
+                    await send_info(msg_id)
+                elif replyable is False:
+                    await archive_email(msg_id)
+                else:
+                    # replyable=None (ambiguous) -- skip, don't auto-act
+                    continue
+            else:
+                continue
+
+            e["_auto_executed"] = True
+            executed += 1
+            logger.info(
+                "Auto-executed %s for email %s (confidence=%.2f)",
+                intent, msg_id, confidence,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Auto-execute %s failed for email %s: %s",
+                intent, msg_id, exc,
+            )
+
+    return executed
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +691,11 @@ async def run(task: ScheduledTask) -> dict:
     # 9. Record to DB (extended INSERT with intent + action_plan + customer_context_summary)
     await _record_with_action_plans(emails)
 
+    # 9b. Auto-execute high-confidence intent actions
+    auto_executed = 0
+    if cfg.auto_execute_enabled:
+        auto_executed = await _auto_execute_actions(emails, cfg)
+
     # 10. Send intent-aware ntfy notifications
     action_emails = [
         e for e in emails
@@ -620,13 +706,14 @@ async def run(task: ScheduledTask) -> dict:
         await _send_enriched_notifications(action_emails)
 
     logger.info(
-        "Email intake: %d new, %d CRM matched, %d intent classified",
-        len(emails), crm_count, intent_count,
+        "Email intake: %d new, %d CRM matched, %d intent classified, %d auto-executed",
+        len(emails), crm_count, intent_count, auto_executed,
     )
 
     return {
         "new_emails": len(emails),
         "crm_matched": crm_count,
         "intent_classified": intent_count,
+        "auto_executed": auto_executed,
         "_skip_synthesis": True,
     }

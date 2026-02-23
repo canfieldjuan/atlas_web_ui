@@ -30,7 +30,8 @@ async def _get_draftable_emails() -> list[dict[str, Any]]:
 
     rows = await pool.fetch(
         """
-        SELECT pe.gmail_message_id, pe.sender, pe.subject, pe.category, pe.priority, pe.replyable
+        SELECT pe.gmail_message_id, pe.sender, pe.subject, pe.category,
+               pe.priority, pe.replyable, pe.intent, pe.action_plan
         FROM processed_emails pe
         LEFT JOIN email_drafts ed ON pe.gmail_message_id = ed.gmail_message_id
             AND ed.status IN ('pending', 'approved', 'sent')
@@ -196,8 +197,15 @@ async def _send_draft_notification(
     original_from: str,
     draft_subject: str,
     draft_body: str,
+    *,
+    intent: str | None = None,
+    confidence: float = 0.0,
 ) -> None:
-    """Send ntfy notification with approve/reject action buttons."""
+    """Send ntfy notification with approve/reject action buttons.
+
+    When auto-approve is enabled and the draft is eligible, appends a
+    countdown notice and a [Cancel Auto-Send] button.
+    """
     if not settings.email_draft.notify_drafts:
         return
     if not settings.alerts.ntfy_enabled:
@@ -205,7 +213,8 @@ async def _send_draft_notification(
 
     import httpx
 
-    api_url = settings.email_draft.atlas_api_url.rstrip("/")
+    cfg = settings.email_draft
+    api_url = cfg.atlas_api_url.rstrip("/")
     ntfy_url = f"{settings.alerts.ntfy_url.rstrip('/')}/{settings.alerts.ntfy_topic}"
 
     # Truncate body for notification
@@ -214,15 +223,34 @@ async def _send_draft_notification(
 
     message = f"From: {sender_name}\nSubject: {draft_subject}\n\n{preview}"
 
-    # ntfy Actions header: semicolon-separated action definitions
-    actions = (
-        f"http, Approve, {api_url}/api/v1/email/drafts/{draft_id}/approve, method=POST, clear=true; "
-        f"http, Reject, {api_url}/api/v1/email/drafts/{draft_id}/reject, method=POST, clear=true; "
-        f"view, View Full, {api_url}/api/v1/email/drafts/{draft_id}"
+    # Check if this draft is eligible for auto-approve
+    auto_approve_eligible = (
+        cfg.auto_approve_enabled
+        and intent
+        and intent != "complaint"
+        and intent in cfg.auto_approve_intents
+        and confidence >= cfg.auto_approve_min_confidence
     )
 
+    if auto_approve_eligible:
+        delay_min = cfg.auto_approve_delay_seconds / 60
+        message += f"\n\nAuto-sending in {delay_min:.0f} min unless rejected"
+        title = f"Draft (auto-send {delay_min:.0f}m): {draft_subject[:50]}"
+        actions = (
+            f"http, Approve Now, {api_url}/api/v1/email/drafts/{draft_id}/approve, method=POST, clear=true; "
+            f"http, Cancel Auto-Send, {api_url}/api/v1/email/drafts/{draft_id}/reject, method=POST, clear=true; "
+            f"view, View Full, {api_url}/api/v1/email/drafts/{draft_id}"
+        )
+    else:
+        title = f"Email Draft: {draft_subject[:60]}"
+        actions = (
+            f"http, Approve, {api_url}/api/v1/email/drafts/{draft_id}/approve, method=POST, clear=true; "
+            f"http, Reject, {api_url}/api/v1/email/drafts/{draft_id}/reject, method=POST, clear=true; "
+            f"view, View Full, {api_url}/api/v1/email/drafts/{draft_id}"
+        )
+
     headers = {
-        "Title": f"Email Draft: {draft_subject[:60]}",
+        "Title": title,
         "Priority": "default",
         "Tags": "email,draft",
         "Actions": actions,
@@ -363,12 +391,26 @@ async def run(task: ScheduledTask) -> dict:
             logger.error("Failed to insert draft for %s: %s", msg_id, e)
             continue
 
+        # Extract intent + confidence for auto-approve notification
+        email_intent = email_meta.get("intent")
+        email_confidence = 0.0
+        ap_raw = email_meta.get("action_plan")
+        if ap_raw:
+            try:
+                ap = json.loads(ap_raw) if isinstance(ap_raw, str) else ap_raw
+                if isinstance(ap, dict):
+                    email_confidence = float(ap.get("confidence", 0.0))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
         # Send notification
         await _send_draft_notification(
             draft_id=draft_id,
             original_from=full_msg.get("from", ""),
             draft_subject=draft_subject,
             draft_body=draft_body,
+            intent=email_intent,
+            confidence=email_confidence,
         )
 
         drafts_created.append({

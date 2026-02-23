@@ -605,6 +605,21 @@ class EmailDraftConfig(BaseSettings):
         default=32,
         description="Max tokens for triage response (yes/no answer)",
     )
+    auto_approve_enabled: bool = Field(
+        default=False, description="Auto-approve and send drafts above confidence threshold"
+    )
+    auto_approve_delay_seconds: int = Field(
+        default=300, ge=60, le=1800,
+        description="Delay before auto-sending (owner can cancel via ntfy during this window)",
+    )
+    auto_approve_min_confidence: float = Field(
+        default=0.85, ge=0.5, le=1.0,
+        description="Min intent confidence to auto-approve draft",
+    )
+    auto_approve_intents: list[str] = Field(
+        default=["info_admin", "estimate_request", "reschedule"],
+        description="Intents eligible for auto-approval (complaint always excluded)",
+    )
 
 
 class EmailIntakeConfig(BaseSettings):
@@ -622,6 +637,16 @@ class EmailIntakeConfig(BaseSettings):
     )
     max_action_plans_per_cycle: int = Field(
         default=5, ge=1, le=20, description="Cap LLM calls per polling cycle"
+    )
+    auto_execute_enabled: bool = Field(
+        default=False, description="Auto-execute intent actions above confidence threshold"
+    )
+    auto_execute_min_confidence: float = Field(
+        default=0.85, ge=0.5, le=1.0, description="Min confidence to auto-execute"
+    )
+    auto_execute_intents: list[str] = Field(
+        default=["estimate_request", "reschedule", "info_admin"],
+        description="Intents eligible for auto-execution (complaint always excluded)",
     )
 
 
