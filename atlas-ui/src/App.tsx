@@ -12,18 +12,18 @@ function App() {
   const {
     transcript, response, status, isConnected, audioAnalysis,
     privacyMode, setPrivacyMode, textInput, setTextInput,
-    media, setMedia, conversationHistory,
+    media, setMedia, conversationHistory, systemEvents,
   } = useAtlasStore();
   const inputRef = useRef<HTMLInputElement>(null);
   const [showLeftPanel, setShowLeftPanel] = useState(false);
   const [showRightPanel, setShowRightPanel] = useState(false);
-  const [logs, setLogs] = useState([
-    "System initialized.",
-    "Neural link established.",
-    "Awaiting voice commands."
-  ]);
-  const [cpuLoad, setCpuLoad] = useState(42);
-  const [networkSpeed, setNetworkSpeed] = useState(420);
+  const [cpuLoad, setCpuLoad] = useState(0);
+  const [networkSpeed, setNetworkSpeed] = useState(0);
+
+  // Auto-scale network display: KB/s when under 1 Mb/s, Mb/s otherwise
+  const netDisplay = networkSpeed < 1
+    ? { value: (networkSpeed * 1000).toFixed(0), unit: 'KB/s' }
+    : { value: networkSpeed.toFixed(1), unit: 'Mb/s' };
   const logEndRef = useRef<HTMLDivElement>(null);
   const historyEndRef = useRef<HTMLDivElement>(null);
 
@@ -48,32 +48,30 @@ function App() {
     }
   };
 
-  // Simulated system stats and logs
+  // Real system stats — polled from Atlas Brain every 2s
   useEffect(() => {
-    const interval = setInterval(() => {
-      setCpuLoad(c => Math.max(20, Math.min(85, c + (Math.random() - 0.5) * 5)));
-      setNetworkSpeed(() => Math.floor(400 + Math.random() * 50));
-
-      if (Math.random() > 0.92) {
-        const statusLogs = [
-          "Analyzing audio stream...",
-          "Processing neural patterns...",
-          "Voice recognition active.",
-          "Network uplink stable.",
-          "Encryption keys rotated."
-        ];
-        const newLog = statusLogs[Math.floor(Math.random() * statusLogs.length)];
-        setLogs(prev => [...prev.slice(-15), newLog]);
+    const fetchStats = async () => {
+      try {
+        const res = await fetch('/api/v1/system/stats');
+        if (res.ok) {
+          const data = await res.json();
+          setCpuLoad(data.cpu_percent ?? 0);
+          setNetworkSpeed(data.net_mbps ?? 0);
+        }
+      } catch {
+        // backend unreachable — leave last values
       }
-    }, 1200);
+    };
 
+    fetchStats(); // immediate first read
+    const interval = setInterval(fetchStats, 2000);
     return () => clearInterval(interval);
   }, []);
 
-  // Auto-scroll logs
+  // Auto-scroll system events
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [logs]);
+  }, [systemEvents]);
 
   // Auto-scroll conversation history
   useEffect(() => {
@@ -188,7 +186,7 @@ function App() {
           <div className="flex flex-col items-end">
             <span className="text-cyan-600 uppercase text-[9px]">Network</span>
             <div className="flex gap-1 items-center">
-              <span className="text-base font-bold tabular-nums">{networkSpeed} Mb/s</span>
+              <span className="text-base font-bold tabular-nums">{netDisplay.value} {netDisplay.unit}</span>
               <Wifi size={12} />
             </div>
           </div>
@@ -345,16 +343,29 @@ function App() {
               </div>
             </div>
             <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar scroll-smooth relative z-20">
-              {logs.map((log, i) => (
-                <div key={i} className="text-[10px] leading-tight flex gap-2 font-mono">
-                  <span className="text-cyan-600 shrink-0 font-bold opacity-70">
-                    [{new Date().toLocaleTimeString([], {hour12: false, minute: '2-digit', second: '2-digit'})}]
-                  </span>
-                  <span className={log.startsWith(">>>") ? "text-cyan-300 font-bold" : "text-cyan-400"}>
-                    {log}
-                  </span>
-                </div>
-              ))}
+              {systemEvents.length === 0 ? (
+                <div className="text-[10px] text-cyan-700 italic font-mono mt-2">Waiting for system events...</div>
+              ) : (
+                systemEvents.map((evt) => {
+                  const hhmm = new Date(evt.ts).toLocaleTimeString([], {hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'});
+                  const catColor: Record<string, string> = {
+                    ha: 'text-cyan-400',
+                    alert: 'text-yellow-400',
+                    reminder: 'text-purple-400',
+                    task: 'text-green-400',
+                    llm: 'text-blue-400',
+                    comms: 'text-orange-400',
+                  };
+                  const levelColor = evt.level === 'error' ? 'text-red-400' : evt.level === 'warning' ? 'text-yellow-400' : '';
+                  return (
+                    <div key={evt.id} className="text-[10px] leading-tight flex gap-2 font-mono">
+                      <span className="text-cyan-600 shrink-0 font-bold opacity-70">[{hhmm}]</span>
+                      <span className={`shrink-0 uppercase font-bold ${catColor[evt.category] || 'text-cyan-400'}`}>{evt.category}</span>
+                      <span className={`${levelColor || 'text-cyan-400'} break-all`}>{evt.message}</span>
+                    </div>
+                  );
+                })
+              )}
               <div ref={logEndRef} />
             </div>
           </div>

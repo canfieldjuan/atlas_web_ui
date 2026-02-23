@@ -464,6 +464,28 @@ async def lifespan(app: FastAPI):
 
     logger.info("Atlas Brain startup complete")
 
+    # Register system event broadcaster with the orchestrated WebSocket channel
+    try:
+        from .events.broadcaster import register_broadcast_fn
+        from .api.orchestrated.websocket import _broadcast
+        register_broadcast_fn(_broadcast)
+        logger.info("System event broadcaster wired to WebSocket")
+    except Exception as e:
+        logger.error("Failed to register system event broadcaster: %s", e)
+
+    # Register alert -> UI system feed callback
+    if alert_manager is not None:
+        try:
+            from .events.broadcaster import broadcast_system_event
+
+            async def _alert_ui_callback(message: str, rule, event) -> None:
+                await broadcast_system_event("alert", "warning", message)
+
+            alert_manager.register_callback(_alert_ui_callback)
+            logger.debug("Alert UI feed callback registered")
+        except Exception as e:
+            logger.error("Failed to register alert UI callback: %s", e)
+
     yield  # Application runs here
 
     # --- Shutdown ---

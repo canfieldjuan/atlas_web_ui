@@ -605,6 +605,16 @@ class TaskScheduler:
                     task.name, status, duration_ms,
                 )
 
+                try:
+                    from ..events.broadcaster import broadcast_system_event
+                    evt_level = "error" if status == "failed" else "info"
+                    await broadcast_system_event(
+                        "task", evt_level,
+                        "Task '%s' %s (%dms)" % (task.name, status, duration_ms),
+                    )
+                except Exception:
+                    pass
+
                 if status == "failed":
                     self._maybe_schedule_retry(task, retry_count)
                     await self._check_consecutive_failures(task.id)
@@ -765,6 +775,16 @@ class TaskScheduler:
                 await repo.update_last_run(task.id, now, self._get_next_run_time(task))
 
                 logger.info("Manual task '%s' %s in %dms", task.name, status, duration_ms)
+
+                try:
+                    from ..events.broadcaster import broadcast_system_event
+                    evt_level = "error" if status == "failed" else "info"
+                    await broadcast_system_event(
+                        "task", evt_level,
+                        "Task '%s' %s (%dms)" % (task.name, status, duration_ms),
+                    )
+                except Exception:
+                    pass
 
                 if status == "failed":
                     self._maybe_schedule_retry(task, 0)

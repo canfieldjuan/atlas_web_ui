@@ -23,6 +23,14 @@ export interface ConversationTurn {
   text: string;
 }
 
+export interface SystemEvent {
+  id: string;
+  ts: string;
+  category: 'ha' | 'alert' | 'reminder' | 'task' | 'llm' | 'comms';
+  level: 'info' | 'warning' | 'error';
+  message: string;
+}
+
 export interface AtlasStore {
   status: AtlasState;
   transcript: string;
@@ -33,6 +41,7 @@ export interface AtlasStore {
   textInput: string;
   media: MediaAttachment | null;
   conversationHistory: ConversationTurn[];
+  systemEvents: SystemEvent[];
   setStatus: (status: AtlasState) => void;
   setTranscript: (text: string) => void;
   setResponse: (text: string) => void;
@@ -42,5 +51,6 @@ export interface AtlasStore {
   setTextInput: (text: string) => void;
   setMedia: (media: MediaAttachment | null) => void;
   addConversationTurn: (role: 'user' | 'assistant', text: string) => void;
+  addSystemEvent: (event: SystemEvent) => void;
   reset: () => void;
 }

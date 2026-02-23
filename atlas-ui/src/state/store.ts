@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { AtlasStore } from '../types/index';
 
 const MAX_HISTORY = 20;
+const MAX_EVENTS = 50;
 export const PRIVACY_STORAGE_KEY = 'atlas-privacy-mode';
 
 export const useAtlasStore = create<AtlasStore>((set) => ({
@@ -14,6 +15,7 @@ export const useAtlasStore = create<AtlasStore>((set) => ({
   textInput: '',
   media: null,
   conversationHistory: [],
+  systemEvents: [],
 
   setStatus: (status) => set({ status }),
   setTranscript: (transcript) => set({ transcript }),
@@ -31,6 +33,10 @@ export const useAtlasStore = create<AtlasStore>((set) => ({
 
   addConversationTurn: (role, text) => set((state) => ({
     conversationHistory: [...state.conversationHistory, { role, text }].slice(-MAX_HISTORY),
+  })),
+
+  addSystemEvent: (event) => set((state) => ({
+    systemEvents: [...state.systemEvents.slice(-(MAX_EVENTS - 1)), event],
   })),
 
   reset: () => set({

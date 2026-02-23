@@ -118,6 +118,13 @@ class ReminderScheduler:
         try:
             await self._delivery_callback(reminder)
             logger.info("Delivered reminder %s: %s", reminder.id, reminder.message)
+            try:
+                from ..events.broadcaster import broadcast_system_event
+                await broadcast_system_event(
+                    "reminder", "info", "Reminder: %s" % reminder.message
+                )
+            except Exception:
+                pass
         except Exception as e:
             logger.error("Failed to deliver reminder %s: %s", reminder.id, e)
 

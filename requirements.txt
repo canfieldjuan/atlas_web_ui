@@ -3,6 +3,7 @@ uvicorn[standard]
 python-dotenv
 python-multipart
 pydantic-settings
+psutil
 
 # ML / AI
 torch

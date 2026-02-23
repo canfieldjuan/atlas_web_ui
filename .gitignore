@@ -85,3 +85,8 @@ PROGRESS_*.md
 
 # Pip freeze backups
 requirements.freeze.bak
+
+# TLS certificates and private keys
+*.crt
+*.key
+*.pem

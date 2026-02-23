@@ -25,6 +25,7 @@ from .proactive_actions import router as proactive_actions_router
 from .email_drafts import router as email_drafts_router
 from .contacts import router as contacts_router
 from .security import router as security_router
+from .system import router as system_router
 
 # Main router that aggregates all sub-routers
 router = APIRouter()
@@ -50,3 +51,4 @@ router.include_router(proactive_actions_router)
 router.include_router(email_drafts_router)
 router.include_router(contacts_router)
 router.include_router(security_router)
+router.include_router(system_router)

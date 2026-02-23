@@ -28,6 +28,14 @@ logger = logging.getLogger("atlas.capabilities.homeassistant")
 _ha_backend: Optional[HomeAssistantBackend] = None
 _ws_client: Optional[HomeAssistantWebSocket] = None
 
+# Entity prefixes worth broadcasting to the UI system feed.
+_HA_BROADCAST_PREFIXES = (
+    "light.", "switch.", "media_player.", "input_boolean.",
+    "cover.", "climate.", "lock.",
+)
+# States that carry no useful information for the operator.
+_HA_SKIP_STATES = frozenset(("unavailable", "unknown"))
+
 
 async def _on_state_changed(event_data: dict[str, Any]) -> None:
     """Handle state_changed event from WebSocket."""
@@ -36,9 +44,26 @@ async def _on_state_changed(event_data: dict[str, Any]) -> None:
 
     # Log state changes at DEBUG level
     entity_id = event_data.get("entity_id", "unknown")
-    new_state = event_data.get("new_state", {})
+    new_state = event_data.get("new_state", {}) or {}
     state_value = new_state.get("state", "unknown")
     logger.debug("WS state_changed: %s -> %s", entity_id, state_value)
+
+    # Broadcast significant state changes to the UI system feed
+    if (
+        new_state
+        and any(entity_id.startswith(p) for p in _HA_BROADCAST_PREFIXES)
+        and state_value not in _HA_SKIP_STATES
+    ):
+        try:
+            from ..events.broadcaster import broadcast_system_event
+            attrs = new_state.get("attributes", {}) or {}
+            friendly = (
+                attrs.get("friendly_name")
+                or entity_id.split(".", 1)[-1].replace("_", " ").title()
+            )
+            await broadcast_system_event("ha", "info", "%s: %s" % (friendly, state_value))
+        except Exception:
+            pass
 
 
 def _friendly_name_from_entity(entity: dict) -> str:

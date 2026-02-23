@@ -5,7 +5,7 @@ import { getWebSocketUrl } from '../config/connection';
 export const useAtlas = (url: string = getWebSocketUrl()) => {
   const {
     setStatus, setTranscript, setResponse, setConnected, setAudioAnalysis,
-    setMedia, addConversationTurn,
+    setMedia, addConversationTurn, addSystemEvent,
   } = useAtlasStore();
   const ws = useRef<WebSocket | null>(null);
   const currentAudio = useRef<HTMLAudioElement | null>(null);
@@ -214,6 +214,16 @@ export const useAtlas = (url: string = getWebSocketUrl()) => {
             break;
           }
 
+          case 'system_event':
+            addSystemEvent({
+              id: data.id || String(Date.now()),
+              ts: data.ts || new Date().toISOString(),
+              category: data.category || 'llm',
+              level: data.level || 'info',
+              message: data.message || '',
+            });
+            break;
+
           default:
             console.log('Unhandled state:', data.state);
         }
@@ -222,7 +232,7 @@ export const useAtlas = (url: string = getWebSocketUrl()) => {
       }
     };
 
-  }, [url, setStatus, setTranscript, setResponse, setConnected, setAudioAnalysis, setMedia, addConversationTurn]);
+  }, [url, setStatus, setTranscript, setResponse, setConnected, setAudioAnalysis, setMedia, addConversationTurn, addSystemEvent]);
 
   useEffect(() => {
     connect();
