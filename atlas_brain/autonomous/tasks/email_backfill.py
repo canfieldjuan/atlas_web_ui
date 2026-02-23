@@ -1,9 +1,13 @@
 """
 CRM email backfill task.
 
-Manually-triggered task that scans inbox history via IMAP, classifies
-emails, and populates the CRM with contacts and interactions from
-historical commercial/customer emails.
+Manually-triggered task that scans the **Sent Mail** folder via IMAP,
+extracts recipients, and populates the CRM with contacts and interactions
+from historical customer correspondence.
+
+Strategy: if you sent someone an email, they are a real contact. The Sent
+folder is a far more reliable signal than the inbox (which is mostly
+automated services).
 
 Idempotent: find_or_create_contact deduplicates by email; processed_emails
 has ON CONFLICT DO NOTHING.  Safe to re-run.
@@ -12,58 +16,90 @@ has ON CONFLICT DO NOTHING.  Safe to re-run.
 import asyncio
 import email.utils
 import logging
+import re
 from datetime import timezone
 from typing import Any
 
 from ...storage.database import get_db_pool
 from ...storage.models import ScheduledTask
-from .email_classifier import get_email_classifier
 from .gmail_digest import _get_processed_message_ids
 
 logger = logging.getLogger("atlas.autonomous.tasks.email_backfill")
 
+# Recipients to skip -- automated addresses, self, and junk patterns
+_SKIP_LOCAL_PARTS = frozenset({
+    "noreply", "donotreply", "maildaemon", "postmaster",
+    "unsubscribe", "bounce", "abuse", "support", "help",
+    "info", "notifications", "alerts", "reply",
+})
+
+_SKIP_DOMAIN_KEYWORDS = frozenset({
+    "optout", "unsubscribe", "getblueshift.com",
+    "example.invalid", "docs.google.com",
+})
+
+_SKIP_SUBJECT_RE = re.compile(
+    r"^(unsubscribe|uid=|https?://)", re.IGNORECASE,
+)
+
+
+def _is_junk_recipient(addr: str, subject: str, owner_email: str) -> bool:
+    """Return True if the recipient address should be skipped."""
+    addr_lower = addr.lower()
+    if addr_lower == owner_email.lower():
+        return True
+
+    local = addr_lower.split("@")[0].replace("_", "").replace("-", "").replace(".", "")
+    if local in _SKIP_LOCAL_PARTS:
+        return True
+
+    domain = addr_lower.split("@")[-1] if "@" in addr_lower else ""
+    if any(kw in domain for kw in _SKIP_DOMAIN_KEYWORDS):
+        return True
+
+    # Skip gibberish addresses (long base64-like local parts with no real name)
+    if len(local) > 40:
+        return True
+
+    if _SKIP_SUBJECT_RE.match(subject.strip()):
+        return True
+
+    return False
+
 
 async def run(task: ScheduledTask) -> dict:
-    """Scan inbox history and populate CRM contacts from historical emails."""
+    """Scan Sent Mail and populate CRM contacts from email recipients."""
     from ...services.email_provider import IMAPEmailProvider
+    from ...config import settings
 
     metadata = task.metadata or {}
-    query = metadata.get("query", "newer_than:90d")
-    max_days = metadata.get("max_days", 90)
+    max_days = metadata.get("max_days", 730)
     batch_size = metadata.get("batch_size", 10)
+    mailbox = metadata.get("mailbox", "[Gmail]/Sent Mail")
     window_days = 30
 
     provider = IMAPEmailProvider()
     if not provider.is_configured():
         return {"_skip_synthesis": "IMAP not configured"}
 
-    classifier = get_email_classifier()
+    owner_email = settings.email_intake.imap_username or ""
 
     # Date-range chunking: split into windows to work around 200-result IMAP cap.
-    # Work backwards from today in `window_days`-day chunks.
     all_emails: list[dict[str, Any]] = []
     windows_scanned = 0
 
     for window_start_offset in range(0, max_days, window_days):
         window_end_offset = min(window_start_offset + window_days, max_days)
 
-        # Build window query: newer_than for outer bound, older_than for inner bound
-        # e.g. for days 0-30: newer_than:30d (no older_than needed for most recent)
-        # e.g. for days 30-60: newer_than:60d older_than:30d
         window_query_parts = [f"newer_than:{window_end_offset}d"]
         if window_start_offset > 0:
             window_query_parts.append(f"older_than:{window_start_offset}d")
-
-        # Merge with user query filters (e.g. from:customer@domain.com)
-        extra_filters = _extract_non_date_filters(query)
-        if extra_filters:
-            window_query_parts.extend(extra_filters)
 
         window_query = " ".join(window_query_parts)
 
         try:
             messages = await provider.list_messages(
-                query=window_query, max_results=200,
+                query=window_query, max_results=200, mailbox=mailbox,
             )
         except Exception as e:
             logger.warning(
@@ -85,11 +121,28 @@ async def run(task: ScheduledTask) -> dict:
             windows_scanned += 1
             continue
 
-        # Fetch full body in batches
-        for i in range(0, len(new_messages), batch_size):
-            batch = new_messages[i : i + batch_size]
-            tasks = [provider.get_message(m["id"]) for m in batch]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Filter out junk recipients before fetching full bodies
+        filtered = []
+        for m in new_messages:
+            _, recipient = email.utils.parseaddr(m.get("to", ""))
+            subject = m.get("subject", "")
+            if not recipient:
+                continue
+            if _is_junk_recipient(recipient, subject, owner_email):
+                continue
+            filtered.append(m)
+
+        if not filtered:
+            windows_scanned += 1
+            continue
+
+        # Fetch full body in batches (only for non-junk)
+        for i in range(0, len(filtered), batch_size):
+            batch = filtered[i : i + batch_size]
+            fetch_tasks = [
+                provider.get_message(m["id"], mailbox=mailbox) for m in batch
+            ]
+            results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
             for r in results:
                 if isinstance(r, Exception):
                     logger.warning("Backfill fetch failed: %s", r)
@@ -100,9 +153,9 @@ async def run(task: ScheduledTask) -> dict:
 
         windows_scanned += 1
         logger.info(
-            "Backfill window %d-%dd: %d messages, %d new, %d fetched so far",
+            "Backfill window %d-%dd: %d messages, %d new, %d non-junk, %d fetched so far",
             window_start_offset, window_end_offset,
-            len(messages), len(new_messages), len(all_emails),
+            len(messages), len(new_messages), len(filtered), len(all_emails),
         )
 
     if not all_emails:
@@ -112,28 +165,7 @@ async def run(task: ScheduledTask) -> dict:
             "_skip_synthesis": True,
         }
 
-    # Classify all
-    classifier.classify_batch(all_emails)
-
-    # Filter to real human-replyable emails only.
-    # Must be replyable (not noreply/automated senders) AND from a
-    # category that indicates actual person-to-person correspondence.
-    _CONTACT_CATEGORIES = {"lead", "personal"}
-    actionable = [
-        e for e in all_emails
-        if e.get("replyable") is True
-        and e.get("category") in _CONTACT_CATEGORIES
-    ]
-
-    if not actionable:
-        return {
-            "total_scanned": len(all_emails),
-            "actionable": 0,
-            "windows_scanned": windows_scanned,
-            "_skip_synthesis": True,
-        }
-
-    # CRM backfill: create contacts and log interactions
+    # CRM backfill: create contacts from recipients and log interactions
     contacts_linked = 0
     interactions_logged = 0
 
@@ -141,25 +173,27 @@ async def run(task: ScheduledTask) -> dict:
 
     crm = get_crm_provider()
 
-    for e in actionable:
+    for e in all_emails:
         try:
-            _, sender_email = email.utils.parseaddr(e.get("from", ""))
-            if not sender_email:
+            _, recipient_email = email.utils.parseaddr(e.get("to", ""))
+            if not recipient_email:
                 continue
 
-            # Skip automated/noreply senders that slipped through classification
-            local_part = sender_email.split("@")[0].lower().replace("_", "").replace("-", "").replace(".", "")
-            if local_part in ("noreply", "donotreply", "maildaemon", "postmaster"):
+            # Double-check junk filter (full message might have different To:)
+            if _is_junk_recipient(
+                recipient_email, e.get("subject", ""), owner_email,
+            ):
                 continue
 
-            sender_name = e.get("from", "").split("<")[0].strip().strip('"')
-            if not sender_name:
-                sender_name = sender_email
+            recipient_name = e.get("to", "").split("<")[0].strip().strip('"')
+            if not recipient_name or recipient_name.lower() == recipient_email.lower():
+                # No display name -- use email local part as name
+                recipient_name = recipient_email.split("@")[0].replace(".", " ").title()
 
             # find_or_create_contact deduplicates by email
             contact = await crm.find_or_create_contact(
-                full_name=sender_name,
-                email=sender_email,
+                full_name=recipient_name,
+                email=recipient_email,
                 source="email_backfill",
                 contact_type="customer",
             )
@@ -170,7 +204,7 @@ async def run(task: ScheduledTask) -> dict:
             e["_contact_id"] = contact_id
             contacts_linked += 1
 
-            # Log the email as a CRM interaction
+            # Log the sent email as a CRM interaction
             subject = e.get("subject", "(no subject)")
             body_preview = (e.get("body_text") or "")[:200]
             date_str = e.get("date", "")
@@ -184,7 +218,7 @@ async def run(task: ScheduledTask) -> dict:
             await crm.log_interaction(
                 contact_id=contact_id,
                 interaction_type="email",
-                summary=f"Received email: {subject}. {body_preview}".strip(),
+                summary=f"Sent email: {subject}. {body_preview}".strip(),
                 occurred_at=occurred_at,
             )
             interactions_logged += 1
@@ -195,33 +229,20 @@ async def run(task: ScheduledTask) -> dict:
             )
 
     # Record to processed_emails (ON CONFLICT DO NOTHING for idempotency)
-    await _record_backfill_emails(actionable)
+    await _record_backfill_emails(all_emails)
 
     logger.info(
-        "Backfill complete: %d scanned, %d actionable, %d contacts linked, "
-        "%d interactions",
-        len(all_emails), len(actionable), contacts_linked, interactions_logged,
+        "Backfill complete: %d fetched, %d contacts linked, %d interactions",
+        len(all_emails), contacts_linked, interactions_logged,
     )
 
     return {
         "total_scanned": len(all_emails),
-        "actionable": len(actionable),
         "contacts_linked": contacts_linked,
         "interactions_logged": interactions_logged,
         "windows_scanned": windows_scanned,
         "_skip_synthesis": True,
     }
-
-
-def _extract_non_date_filters(query: str) -> list[str]:
-    """Extract non-date filter tokens from a query string.
-
-    Strips newer_than:, older_than:, is:unread etc. and returns remaining
-    tokens like from:customer@domain.com.
-    """
-    skip_prefixes = ("newer_than:", "older_than:", "is:")
-    tokens = query.split()
-    return [t for t in tokens if not any(t.lower().startswith(p) for p in skip_prefixes)]
 
 
 def _parse_email_date(date_str: str) -> str | None:
@@ -247,11 +268,11 @@ async def _record_backfill_emails(emails: list[dict[str, Any]]) -> None:
     for e in emails:
         records.append((
             e.get("id", ""),
-            e.get("from", ""),
+            e.get("to", ""),  # sender column stores recipient for sent mail
             e.get("subject", ""),
-            e.get("category"),
-            e.get("priority"),
-            e.get("replyable"),
+            "sent",  # category = sent (distinguishes from inbox records)
+            "backfill",  # priority = backfill (audit trail)
+            True,  # replyable
             e.get("_contact_id"),
         ))
 

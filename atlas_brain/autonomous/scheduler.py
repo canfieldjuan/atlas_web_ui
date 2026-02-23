@@ -362,7 +362,7 @@ class TaskScheduler:
         },
         {
             "name": "email_backfill",
-            "description": "Scan inbox history and populate CRM contacts",
+            "description": "Scan Sent Mail and populate CRM contacts from recipients",
             "task_type": "builtin",
             "schedule_type": "interval",
             "interval_seconds": 86400,
@@ -370,9 +370,9 @@ class TaskScheduler:
             "enabled": False,
             "metadata": {
                 "builtin_handler": "email_backfill",
-                "query": "newer_than:90d",
-                "max_days": 90,
+                "max_days": 730,
                 "batch_size": 10,
+                "mailbox": "[Gmail]/Sent Mail",
             },
         },
     ]
