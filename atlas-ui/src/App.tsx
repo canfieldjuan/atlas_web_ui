@@ -19,6 +19,7 @@ function App() {
   const [showRightPanel, setShowRightPanel] = useState(false);
   const [cpuLoad, setCpuLoad] = useState(0);
   const [networkSpeed, setNetworkSpeed] = useState(0);
+  const [memPercent, setMemPercent] = useState(0);
 
   // Auto-scale network display: KB/s when under 1 Mb/s, Mb/s otherwise
   const netDisplay = networkSpeed < 1
@@ -57,6 +58,7 @@ function App() {
           const data = await res.json();
           setCpuLoad(data.cpu_percent ?? 0);
           setNetworkSpeed(data.net_mbps ?? 0);
+          setMemPercent(data.mem_percent ?? 0);
         }
       } catch {
         // backend unreachable — leave last values
@@ -212,7 +214,83 @@ function App() {
         {/* Left Panel: System Stats */}
         {showLeftPanel && (
           <section className="col-span-3 flex flex-col gap-4 min-h-0 animate-in fade-in slide-in-from-left duration-300">
-        </section>
+            <div className="relative bg-black/15 p-4 rounded-sm flex-1 flex flex-col backdrop-blur-md overflow-hidden">
+              <div className="flex items-center gap-2 mb-4 pb-2 border-b border-cyan-400/20">
+                <Cpu size={16} className="text-cyan-400" />
+                <span className="text-sm uppercase tracking-wider font-bold text-cyan-300">System</span>
+              </div>
+              <div className="flex flex-col gap-5 relative z-20">
+
+                {/* CPU */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between text-[10px] font-mono">
+                    <span className="text-cyan-600 uppercase tracking-wider">CPU Load</span>
+                    <span className="text-cyan-300 font-bold tabular-nums">{cpuLoad.toFixed(1)}%</span>
+                  </div>
+                  <div className="h-1.5 w-full bg-cyan-900/40 rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-700"
+                      style={{
+                        width: `${cpuLoad}%`,
+                        background: cpuLoad > 80 ? '#f87171' : cpuLoad > 60 ? '#fbbf24' : '#22d3ee',
+                        boxShadow: `0 0 6px ${cpuLoad > 80 ? '#f87171' : cpuLoad > 60 ? '#fbbf24' : '#22d3ee'}88`,
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Memory */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between text-[10px] font-mono">
+                    <span className="text-cyan-600 uppercase tracking-wider">Memory</span>
+                    <span className="text-cyan-300 font-bold tabular-nums">{memPercent.toFixed(1)}%</span>
+                  </div>
+                  <div className="h-1.5 w-full bg-cyan-900/40 rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-700"
+                      style={{
+                        width: `${memPercent}%`,
+                        background: memPercent > 90 ? '#f87171' : memPercent > 75 ? '#fbbf24' : '#a78bfa',
+                        boxShadow: `0 0 6px ${memPercent > 90 ? '#f87171' : memPercent > 75 ? '#fbbf24' : '#a78bfa'}88`,
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Network */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between text-[10px] font-mono">
+                    <span className="text-cyan-600 uppercase tracking-wider">Network</span>
+                    <span className="text-cyan-300 font-bold tabular-nums">{netDisplay.value} {netDisplay.unit}</span>
+                  </div>
+                  <div className="h-1.5 w-full bg-cyan-900/40 rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-green-400 transition-all duration-700"
+                      style={{
+                        width: `${Math.min(100, networkSpeed * 10)}%`,
+                        boxShadow: '0 0 6px #4ade8088',
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Connection Status */}
+                <div className="mt-2 pt-3 border-t border-cyan-400/10 flex flex-col gap-2">
+                  <div className="flex justify-between text-[10px] font-mono">
+                    <span className="text-cyan-600 uppercase tracking-wider">Atlas WS</span>
+                    <span className={isConnected ? 'text-green-400 font-bold' : 'text-red-400 font-bold'}>
+                      {isConnected ? 'CONNECTED' : 'OFFLINE'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-[10px] font-mono">
+                    <span className="text-cyan-600 uppercase tracking-wider">Status</span>
+                    <span className="text-cyan-300 font-bold uppercase">{status}</span>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          </section>
         )}
 
         {/* Center Panel: Main Orb */}
