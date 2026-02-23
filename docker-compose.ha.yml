@@ -1,0 +1,28 @@
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: homeassistant
+    restart: unless-stopped
+    privileged: true
+    # Host networking is the recommended mode for HA — needed for mDNS/SSDP
+    # device discovery (Zigbee, Z-Wave, Chromecast, etc.).
+    # HA will be reachable at:
+    #   - http://localhost:8123          (Atlas Brain on this machine)
+    #   - http://100.112.150.53:8123     (Tailscale — phone, edge nodes)
+    network_mode: host
+    volumes:
+      - ha_config:/config
+      - /etc/localtime:/etc/localtime:ro
+      - /run/dbus:/run/dbus:ro   # Bluetooth discovery
+    environment:
+      - TZ=America/Chicago       # ← update to your actual timezone if different
+    healthcheck:
+      test: ["CMD", "curl", "-fsSL", "http://localhost:8123/api/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  ha_config:
+    name: homeassistant_config

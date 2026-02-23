@@ -1,0 +1,18 @@
+services:
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: homeassistant
+    restart: unless-stopped
+    privileged: true
+    network_mode: host          # needed for mDNS/device discovery
+    environment:
+      - TZ=America/Chicago
+    volumes:
+      - /home/juan-canfield/homeassistant:/config
+      - /run/dbus:/run/dbus:ro  # Bluetooth integration
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8123/api/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
