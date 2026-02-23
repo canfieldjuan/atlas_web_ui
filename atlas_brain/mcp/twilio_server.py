@@ -1,35 +1,44 @@
 """
-Atlas Twilio MCP Server.
+Atlas Telephony MCP Server (SignalWire / Twilio).
 
-Provider-agnostic telephony MCP server backed by Twilio's REST API.
-Designed to be used alongside the existing SignalWire infrastructure —
-switch ATLAS_COMMS_PROVIDER=twilio to route calls through Twilio instead.
+Auto-detects provider from ATLAS_COMMS_PROVIDER (default: signalwire).
+SignalWire's Python SDK subclasses Twilio's, so the REST API is nearly
+identical -- the only differences are client init, recording media URLs,
+and phone lookup.
 
 Key capability: outbound call recording.
-The legacy TwilioProvider.make_call() omitted the `record` parameter, which
-meant outbound calls were never recorded.  This server exposes both:
-  - make_call(record=True)  — record from call creation (recommended)
-  - start_recording(call_sid) — record mid-call (for calls already in progress)
+  - make_call(record=True)  -- record from call creation (recommended)
+  - start_recording(call_sid) -- record mid-call (for calls already in progress)
 
 Tools (10):
-    make_call           — initiate an outbound call (with optional recording)
-    get_call            — fetch call details / status
-    list_calls          — list recent calls with optional status filter
-    hangup_call         — end an active call
-    start_recording     — start recording an active call (fixes outbound recording)
-    stop_recording      — stop a specific recording
-    list_recordings     — list recordings for a call
-    get_recording       — get recording details and media URL
-    send_sms            — send an SMS message
-    lookup_phone        — look up caller ID / carrier info for a phone number
+    make_call           -- initiate an outbound call (with optional recording)
+    get_call            -- fetch call details / status
+    list_calls          -- list recent calls with optional status filter
+    hangup_call         -- end an active call
+    start_recording     -- start recording an active call
+    stop_recording      -- stop a specific recording
+    list_recordings     -- list recordings for a call
+    get_recording       -- get recording details and media URL
+    send_sms            -- send an SMS message
+    lookup_phone        -- look up carrier / line-type info for a phone number
 
 Run:
     python -m atlas_brain.mcp.twilio_server          # stdio
     python -m atlas_brain.mcp.twilio_server --sse    # SSE HTTP transport
 
-Configuration (env vars — all prefixed ATLAS_COMMS_):
-    ATLAS_COMMS_TWILIO_ACCOUNT_SID   Twilio Account SID (ACxxxxxxxx…)
-    ATLAS_COMMS_TWILIO_AUTH_TOKEN    Twilio Auth Token
+Configuration (env vars -- all prefixed ATLAS_COMMS_):
+    # SignalWire (default)
+    ATLAS_COMMS_PROVIDER=signalwire
+    ATLAS_COMMS_SIGNALWIRE_PROJECT_ID    SignalWire Project ID
+    ATLAS_COMMS_SIGNALWIRE_API_TOKEN     SignalWire API Token
+    ATLAS_COMMS_SIGNALWIRE_SPACE         SignalWire Space Name (e.g. 'finetunelab')
+
+    # Twilio (alternative)
+    ATLAS_COMMS_PROVIDER=twilio
+    ATLAS_COMMS_TWILIO_ACCOUNT_SID       Twilio Account SID (ACxxxxxxxx)
+    ATLAS_COMMS_TWILIO_AUTH_TOKEN        Twilio Auth Token
+
+    # Common
     ATLAS_COMMS_WEBHOOK_BASE_URL     Public base URL for webhooks
     ATLAS_COMMS_RECORD_CALLS         true/false (global default for recording)
 """
@@ -58,9 +67,9 @@ async def _lifespan(server):
 mcp = FastMCP(
     "atlas-twilio",
     instructions=(
-        "Twilio MCP server for Atlas. "
-        "Manage outbound/inbound calls, SMS, and recordings via the Twilio REST API. "
-        "For outbound call recording issues: use make_call(record=True) at call creation, "
+        "Telephony MCP server for Atlas (SignalWire / Twilio). "
+        "Manage outbound/inbound calls, SMS, and recordings. "
+        "For outbound call recording: use make_call(record=True) at call creation, "
         "or start_recording(call_sid) to begin recording on an already-active call. "
         "Always confirm phone numbers are in E.164 format (+1XXXXXXXXXX) before calling."
     ),
@@ -68,11 +77,58 @@ mcp = FastMCP(
 )
 
 
+def _is_signalwire() -> bool:
+    """Check if we're using SignalWire (vs Twilio)."""
+    from atlas_comms.core.config import comms_settings
+    return comms_settings.provider.lower() == "signalwire"
+
+
+def _space_url() -> str:
+    """Get the SignalWire space base URL."""
+    from atlas_comms.core.config import comms_settings
+    return f"https://{comms_settings.signalwire_space}.signalwire.com"
+
+
 def _client():
-    """Lazily instantiate the Twilio REST client."""
-    try:
-        from twilio.rest import Client
-        from atlas_comms.core.config import comms_settings
+    """Lazily instantiate the telephony REST client (SignalWire or Twilio)."""
+    from atlas_comms.core.config import comms_settings
+
+    if _is_signalwire():
+        try:
+            from signalwire.rest import Client
+        except ImportError:
+            raise RuntimeError(
+                "SignalWire package not installed. Run: pip install signalwire"
+            )
+
+        space = comms_settings.signalwire_space
+        # SignalWire's LaML compatibility API authenticates with
+        # account_sid + recording_token (NOT project_id + api_token).
+        account_sid = comms_settings.signalwire_account_sid
+        token = comms_settings.signalwire_recording_token
+        if not account_sid or not token:
+            # Fallback to project_id + api_token
+            account_sid = comms_settings.signalwire_project_id
+            token = comms_settings.signalwire_api_token
+
+        if not account_sid or not token or not space:
+            raise RuntimeError(
+                "SignalWire credentials not configured. "
+                "Set ATLAS_COMMS_SIGNALWIRE_ACCOUNT_SID, "
+                "ATLAS_COMMS_SIGNALWIRE_RECORDING_TOKEN, and "
+                "ATLAS_COMMS_SIGNALWIRE_SPACE."
+            )
+        return Client(
+            account_sid, token,
+            signalwire_space_url=f"https://{space}.signalwire.com",
+        )
+    else:
+        try:
+            from twilio.rest import Client
+        except ImportError:
+            raise RuntimeError(
+                "Twilio package not installed. Run: pip install twilio"
+            )
 
         account_sid = comms_settings.twilio_account_sid
         auth_token = comms_settings.twilio_auth_token
@@ -83,15 +139,33 @@ def _client():
                 "Set ATLAS_COMMS_TWILIO_ACCOUNT_SID and ATLAS_COMMS_TWILIO_AUTH_TOKEN."
             )
         return Client(account_sid, auth_token)
-    except ImportError:
-        raise RuntimeError(
-            "Twilio package not installed. Run: pip install twilio"
-        )
 
 
 def _comms_settings():
     from atlas_comms.core.config import comms_settings
     return comms_settings
+
+
+def _recording_media_url(recording_sid: str, account_sid: str) -> str:
+    """Build the correct recording download URL for the active provider."""
+    if _is_signalwire():
+        space = _comms_settings().signalwire_space
+        return (
+            f"https://{space}.signalwire.com/api/laml/2010-04-01/"
+            f"Accounts/{account_sid}/Recordings/{recording_sid}.mp3"
+        )
+    return (
+        f"https://api.twilio.com/2010-04-01/Accounts/"
+        f"{account_sid}/Recordings/{recording_sid}.mp3"
+    )
+
+
+def _account_sid() -> str:
+    """Get the account/project SID for the active provider."""
+    cfg = _comms_settings()
+    if _is_signalwire():
+        return cfg.signalwire_account_sid or cfg.signalwire_project_id
+    return cfg.twilio_account_sid
 
 
 def _e164(number: str) -> str:
@@ -355,6 +429,7 @@ async def list_recordings(call_sid: str) -> str:
     Returns: list of recordings with SID, status, duration, and media URL.
     """
     try:
+        acct = _account_sid()
         recordings = _client().recordings.list(call_sid=call_sid)
         return json.dumps({
             "success": True,
@@ -365,7 +440,7 @@ async def list_recordings(call_sid: str) -> str:
                     "status": r.status,
                     "duration": r.duration,
                     "date_created": str(r.date_created),
-                    "media_url": f"https://api.twilio.com{r.uri.replace('.json', '.mp3')}",
+                    "media_url": _recording_media_url(r.sid, acct),
                 }
                 for r in recordings
             ],
@@ -390,11 +465,7 @@ async def get_recording(recording_sid: str) -> str:
     """
     try:
         r = _client().recordings(recording_sid).fetch()
-        account_sid = _comms_settings().twilio_account_sid
-        media_url = (
-            f"https://api.twilio.com/2010-04-01/Accounts/"
-            f"{account_sid}/Recordings/{recording_sid}.mp3"
-        )
+        media_url = _recording_media_url(recording_sid, _account_sid())
         return json.dumps({
             "success": True,
             "recording_sid": r.sid,
@@ -467,15 +538,63 @@ async def send_sms(
 @mcp.tool()
 async def lookup_phone(phone_number: str) -> str:
     """
-    Look up a phone number using Twilio Lookup API.
+    Look up a phone number for carrier and line-type information.
 
-    Returns: formatted number, country code, carrier name, and caller name
-             (if available — requires Lookup add-on).
+    Returns: formatted number, line type (mobile/landline/voip), carrier,
+             and location when available.
 
     phone_number: Number in E.164 or local format.
     """
+    e164 = _e164(phone_number)
+
+    if _is_signalwire():
+        return await _lookup_signalwire(e164)
+    return _lookup_twilio(e164)
+
+
+async def _lookup_signalwire(e164: str) -> str:
+    """SignalWire phone lookup via their REST Lookup API."""
+    import base64
+    import httpx
+
     try:
-        result = _client().lookups.v2.phone_numbers(_e164(phone_number)).fetch(
+        cfg = _comms_settings()
+        space = cfg.signalwire_space
+        # Lookup API uses account_sid + recording_token auth
+        acct = cfg.signalwire_account_sid or cfg.signalwire_project_id
+        token = cfg.signalwire_recording_token or cfg.signalwire_api_token
+
+        auth = base64.b64encode(f"{acct}:{token}".encode()).decode()
+        url = (
+            f"https://{space}.signalwire.com/api/relay/rest"
+            f"/lookup/phone_number/{e164}?include=carrier"
+        )
+
+        async with httpx.AsyncClient(timeout=10) as http:
+            resp = await http.get(url, headers={"Authorization": f"Basic {auth}"})
+            resp.raise_for_status()
+            result = resp.json()
+
+        carrier_info = result.get("carrier", {})
+        data: dict = {
+            "success": True,
+            "phone_number": result.get("e164", e164),
+            "line_type": result.get("linetype"),
+            "location": result.get("location"),
+        }
+        if carrier_info:
+            data["carrier"] = carrier_info.get("lec")
+            data["carrier_city"] = carrier_info.get("city")
+        return json.dumps(data, default=str)
+    except Exception as exc:
+        logger.exception("lookup_phone (signalwire) error")
+        return json.dumps({"success": False, "error": str(exc)})
+
+
+def _lookup_twilio(e164: str) -> str:
+    """Twilio phone lookup via Lookup v2 API."""
+    try:
+        result = _client().lookups.v2.phone_numbers(e164).fetch(
             fields="caller_name,line_type_intelligence"
         )
         data: dict = {
@@ -491,7 +610,7 @@ async def lookup_phone(phone_number: str) -> str:
             data["carrier"] = result.line_type_intelligence.get("mobile_network_code")
         return json.dumps(data, default=str)
     except Exception as exc:
-        logger.exception("lookup_phone error")
+        logger.exception("lookup_phone (twilio) error")
         return json.dumps({"success": False, "error": str(exc)})
 
 
