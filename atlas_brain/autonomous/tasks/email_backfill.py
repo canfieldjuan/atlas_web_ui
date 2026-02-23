@@ -31,11 +31,15 @@ _SKIP_LOCAL_PARTS = frozenset({
     "noreply", "donotreply", "maildaemon", "postmaster",
     "unsubscribe", "bounce", "abuse", "support", "help",
     "info", "notifications", "alerts", "reply",
+    "customerservice", "tuningsupport", "affiliates",
+    "contractor", "youremail", "your_email",
 })
 
 _SKIP_DOMAIN_KEYWORDS = frozenset({
     "optout", "unsubscribe", "getblueshift.com",
     "example.invalid", "docs.google.com",
+    "redfinoutsourcing.com", "americanmuscle.com",
+    "pedalcommander.com", "webpartners.co", "lincare.com",
 })
 
 _SKIP_SUBJECT_RE = re.compile(
