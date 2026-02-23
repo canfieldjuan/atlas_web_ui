@@ -41,8 +41,10 @@ async def _crm_cross_reference(emails: list[dict[str, Any]]) -> int:
     Fail-open per email.
     """
     from ...services.customer_context import get_customer_context_service
+    from ...services.crm_provider import get_crm_provider
 
     svc = get_customer_context_service()
+    crm = get_crm_provider()
     matched = 0
 
     for e in emails:
@@ -70,6 +72,15 @@ async def _crm_cross_reference(emails: list[dict[str, Any]]) -> int:
                 f"Returning customer: {name}, {ctype}, {n_interactions} past interactions"
             )
             matched += 1
+
+            # Log inbound email as CRM interaction
+            subject = e.get("subject", "(no subject)")
+            body_preview = (e.get("body_text") or "")[:200]
+            await crm.log_interaction(
+                contact_id=ctx.contact_id,
+                interaction_type="email",
+                summary=f"Received email: {subject}. {body_preview}".strip(),
+            )
 
         except Exception as exc:
             logger.warning(
