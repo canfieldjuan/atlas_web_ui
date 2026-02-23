@@ -81,8 +81,10 @@ async def search_contacts(
     """
     Search for contacts by name, phone, or email.
 
-    This is the primary customer lookup — use it instead of searching
-    appointment records.  At least one of query / phone / email is required.
+    This is the primary customer lookup.  At least one of query / phone /
+    email is required.  Searches the CRM contacts table first; if nothing
+    is found, falls back to appointment records so legacy customers that
+    have not been migrated to the CRM are still discoverable.
 
     query: partial name match (case-insensitive)
     phone: any format accepted (digits extracted automatically)
@@ -96,13 +98,64 @@ async def search_contacts(
             business_context_id=business_context_id,
             limit=limit,
         )
+        if results:
+            return json.dumps(
+                {"found": True, "contacts": results, "count": len(results),
+                 "source": "crm"},
+                default=str,
+            )
+    except Exception as exc:
+        logger.warning("CRM search failed, trying appointment fallback: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Fallback: scrape customer data from appointment rows for contacts
+    # not yet in the CRM table.
+    # ------------------------------------------------------------------
+    try:
+        from ..storage.repositories.appointment import get_appointment_repo
+
+        repo = get_appointment_repo()
+        appointments = []
+
+        if phone:
+            appointments = await repo.get_by_phone(
+                phone, status=None, upcoming_only=False, limit=limit,
+            )
+        if not appointments and query:
+            appointments = await repo.search_by_name(
+                query, include_history=True, limit=limit,
+            )
+
+        if not appointments:
+            return json.dumps({"found": False, "contacts": [], "count": 0})
+
+        # Deduplicate by (name, phone) and build contact-shaped dicts
+        seen = set()
+        contacts = []
+        for appt in appointments:
+            key = (appt.get("customer_name", ""), appt.get("customer_phone", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            contacts.append({
+                "full_name": appt.get("customer_name"),
+                "phone": appt.get("customer_phone"),
+                "email": appt.get("customer_email"),
+                "address": appt.get("customer_address"),
+                "source": "appointments",
+            })
+
         return json.dumps(
-            {"found": bool(results), "contacts": results, "count": len(results)},
+            {"found": True, "contacts": contacts, "count": len(contacts),
+             "source": "appointments"},
             default=str,
         )
-    except Exception as exc:
-        logger.exception("search_contacts error")
-        return json.dumps({"error": str(exc), "found": False, "contacts": []})
+    except Exception as fallback_exc:
+        logger.exception("search_contacts fallback error")
+        return json.dumps(
+            {"error": str(fallback_exc), "found": False, "contacts": [],
+             "count": 0}
+        )
 
 
 # ---------------------------------------------------------------------------
