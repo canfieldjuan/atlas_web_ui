@@ -45,13 +45,17 @@ async def query_text(request: TextQueryRequest):
         input_type="text",
     )
 
-    # Build tools_executed list from action_results
+    # Build tools_executed list from action_results + graph metadata
     tools_executed = []
     for action_result in result.action_results:
         if action_result.get("tool"):
             tools_executed.append(action_result.get("tool"))
         elif action_result.get("action"):
             tools_executed.append(action_result.get("action"))
+    # Include MCP tools called via execute_with_tools in conversation path
+    meta_tools = (result.metadata or {}).get("tools_executed", [])
+    if meta_tools and not tools_executed:
+        tools_executed = meta_tools
 
     logger.info(
         "Agent result: action_type=%s, tools=%s, response_len=%d",

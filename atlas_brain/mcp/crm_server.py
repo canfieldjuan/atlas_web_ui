@@ -165,11 +165,19 @@ async def search_contacts(
 @mcp.tool()
 async def get_contact(contact_id: str) -> str:
     """
-    Fetch a contact by their UUID.
+    Fetch a contact by UUID or name.
 
-    Returns the full contact record or {"found": false} when not found.
+    If contact_id is not a valid UUID, treats it as a name search
+    and returns the first matching contact.
     """
     try:
+        # If it doesn't look like a UUID, search by name instead
+        if len(contact_id) < 32:
+            results = await _provider().search_contacts(query=contact_id, limit=1)
+            if results:
+                return json.dumps({"found": True, "contact": results[0]}, default=str)
+            return json.dumps({"found": False, "contact": None})
+
         contact = await _provider().get_contact(contact_id)
         if contact is None:
             return json.dumps({"found": False, "contact": None})
@@ -421,6 +429,7 @@ async def get_customer_context(
     contact_id: Optional[str] = None,
     phone: Optional[str] = None,
     email: Optional[str] = None,
+    name: Optional[str] = None,
     max_interactions: int = 10,
     max_calls: int = 10,
     max_appointments: int = 10,
@@ -429,20 +438,17 @@ async def get_customer_context(
     """
     Get the full unified customer context — everything Atlas knows about a customer.
 
-    Provide at least one of contact_id, phone, or email.  The service resolves the
-    contact record first, then fetches all linked data in parallel (fail-open per source).
+    Provide at least one of contact_id, phone, email, or name.  The service resolves
+    the contact record first, then fetches all linked data in parallel.
 
-    Returns:
-        contact            CRM record (name, phone, email, tags, …)
-        interactions       logged touch-points (calls, emails, notes) — most recent first
-        appointments       past and upcoming appointments linked to this contact
-        call_transcripts   linked call records with extracted data and proposed actions
-        sent_emails        outbound emails addressed to this contact
-        inbox_emails       inbound emails from this contact (populated after J5 lands)
+    contact_id: UUID of the contact (use search_contacts first if you only have a name)
+    name: customer name — will search contacts and use the first match
+    phone: phone number in any format
+    email: email address
     """
-    if not any([contact_id, phone, email]):
+    if not any([contact_id, phone, email, name]):
         return json.dumps(
-            {"error": "Provide at least one of: contact_id, phone, or email", "found": False}
+            {"error": "Provide at least one of: contact_id, phone, email, or name", "found": False}
         )
 
     try:
@@ -455,6 +461,20 @@ async def get_customer_context(
             "max_appointments": max_appointments,
             "max_emails": max_emails,
         }
+
+        # If contact_id doesn't look like a UUID, treat it as a name
+        if contact_id and len(contact_id) < 32:
+            name = contact_id
+            contact_id = None
+
+        # Name-based lookup: search contacts first, then get context by ID
+        if name and not contact_id:
+            results = await _provider().search_contacts(query=name, limit=1)
+            if results:
+                contact_id = results[0].get("id")
+            else:
+                return json.dumps({"found": False, "context": None,
+                                   "message": f"No contact found matching '{name}'"})
 
         if contact_id:
             ctx = await svc.get_context(contact_id, **kwargs)

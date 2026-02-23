@@ -109,6 +109,7 @@ class LangGraphAgentAdapter:
                 llm_ms=timing.get("respond", 0),
                 metadata={
                     "awaiting_user_input": result.get("awaiting_user_input", False),
+                    "tools_executed": result.get("tools_executed", []),
                 },
             )
 
