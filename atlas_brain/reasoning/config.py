@@ -11,7 +11,7 @@ class ReasoningConfig(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_prefix="ATLAS_REASONING_",
+        env_prefix="ATLAS_REASONING__",
         env_file=".env",
         extra="ignore",
     )
