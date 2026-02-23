@@ -76,6 +76,109 @@ _INTENT_NTFY = {
     },
 }
 
+# Follow-up-specific ntfy buttons (keyed by original intent)
+_FOLLOWUP_NTFY = {
+    "estimate_request": {
+        "buttons": [
+            ("http", "Book Appointment", "/api/v1/email/actions/{id}/slots"),
+            ("http", "Draft Reply", "/api/v1/email/drafts/generate/{id}"),
+        ],
+        "tags": "email,dollar,repeat",
+        "priority": "high",
+    },
+    "reschedule": {
+        "buttons": [
+            ("http", "Show Slots", "/api/v1/email/actions/{id}/slots"),
+            ("http", "Draft Reply", "/api/v1/email/drafts/generate/{id}"),
+        ],
+        "tags": "email,calendar,repeat",
+        "priority": "high",
+    },
+    "complaint": {
+        "buttons": [
+            ("http", "Escalate", "/api/v1/email/actions/{id}/escalate"),
+            ("http", "Draft Reply", "/api/v1/email/drafts/generate/{id}"),
+        ],
+        "tags": "email,rotating_light,repeat",
+        "priority": "urgent",
+    },
+    "info_admin": {
+        "buttons": [
+            ("http", "Draft Reply", "/api/v1/email/drafts/generate/{id}"),
+            ("http", "Archive", "/api/v1/email/actions/{id}/archive"),
+        ],
+        "tags": "email,information_source,repeat",
+        "priority": "default",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Follow-up detection (thread tracking)
+# ---------------------------------------------------------------------------
+
+async def _detect_followups(emails: list[dict[str, Any]]) -> int:
+    """Detect emails that are follow-ups to threads Atlas participated in.
+
+    For each email with In-Reply-To or References headers, query email_drafts
+    for any sent draft whose original_message_id or sent_message_id matches.
+    Sets _followup_draft, _followup_draft_id, _followup_original_intent on
+    matching emails.  Returns count of detected follow-ups.
+    """
+    pool = get_db_pool()
+    if not pool.is_initialized:
+        return 0
+
+    detected = 0
+    for e in emails:
+        in_reply_to = (e.get("in_reply_to") or "").strip()
+        references = (e.get("references") or "").strip()
+        if not in_reply_to and not references:
+            continue
+
+        candidate_ids: set[str] = set()
+        if in_reply_to:
+            candidate_ids.add(in_reply_to)
+        if references:
+            candidate_ids.update(references.split())
+        if not candidate_ids:
+            continue
+
+        try:
+            row = await pool.fetchrow(
+                """
+                SELECT ed.id, ed.gmail_message_id, ed.draft_subject, ed.draft_body,
+                       ed.sent_at, pe.intent AS original_intent, pe.action_plan
+                FROM email_drafts ed
+                LEFT JOIN processed_emails pe
+                    ON pe.gmail_message_id = ed.gmail_message_id
+                WHERE ed.status = 'sent'
+                  AND (ed.original_message_id = ANY($1::text[])
+                       OR ed.sent_message_id = ANY($1::text[]))
+                ORDER BY ed.sent_at DESC NULLS LAST
+                LIMIT 1
+                """,
+                list(candidate_ids),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Follow-up detection query failed for email %s: %s",
+                e.get("id"), exc,
+            )
+            continue
+
+        if row:
+            e["_followup_draft"] = dict(row)
+            e["_followup_draft_id"] = row["id"]
+            e["_followup_original_intent"] = row["original_intent"]
+            detected += 1
+            logger.info(
+                "Follow-up detected: email %s is a reply to draft %s (intent=%s)",
+                e.get("id"), row["id"], row["original_intent"],
+            )
+
+    return detected
+
 
 # ---------------------------------------------------------------------------
 # CRM cross-reference (expanded scope)
@@ -267,6 +370,18 @@ async def _classify_and_plan(emails: list[dict[str, Any]]) -> int:
 
             body = e.get("body_text", "")[:1500]
 
+            # Inject thread context for follow-up emails
+            followup_draft = e.get("_followup_draft")
+            if followup_draft:
+                original_intent = e.get("_followup_original_intent", "unknown")
+                our_reply = (followup_draft.get("draft_body") or "")[:500]
+                thread_block = (
+                    "\n## Thread Context (Follow-Up)\n"
+                    f"Original intent: {original_intent}\n"
+                    f"Our previous reply:\n{our_reply}\n---\n"
+                )
+                body = thread_block + body
+
             if skill:
                 system_prompt = (
                     skill.content
@@ -361,7 +476,12 @@ async def _send_enriched_notifications(emails: list[dict[str, Any]]) -> None:
     standard_emails = []
 
     for e in emails:
-        if e.get("priority") != "action_required" and e.get("category") != "lead":
+        is_actionable = (
+            e.get("priority") == "action_required"
+            or e.get("category") == "lead"
+            or e.get("_followup_draft")
+        )
+        if not is_actionable:
             continue
         if e.get("replyable") is False:
             continue
@@ -369,9 +489,10 @@ async def _send_enriched_notifications(emails: list[dict[str, Any]]) -> None:
         intent = e.get("_intent")
         customer_summary = e.get("_customer_summary")
         action_plan = e.get("_action_plan")
+        followup_draft = e.get("_followup_draft")
 
-        # No intent and no CRM enrichment -- use standard notification path
-        if not intent and not customer_summary and not action_plan:
+        # No intent, no CRM enrichment, and not a follow-up -- use standard path
+        if not intent and not customer_summary and not action_plan and not followup_draft:
             standard_emails.append(e)
             continue
 
@@ -398,6 +519,13 @@ async def _send_enriched_notifications(emails: list[dict[str, Any]]) -> None:
 
         # Build enriched message body
         parts = [f"From: {sender_name}", f"Subject: {subject}"]
+        if followup_draft:
+            orig_intent = e.get("_followup_original_intent", "unknown")
+            orig_label = _INTENT_LABELS.get(orig_intent, orig_intent)
+            our_reply_snippet = (followup_draft.get("draft_body") or "")[:150]
+            if our_reply_snippet:
+                parts.append(f"\nThread: follow-up to {orig_label}")
+                parts.append(f"Our last reply: {our_reply_snippet}...")
         if customer_summary:
             parts.append(f"\n{customer_summary}")
         if action_plan:
@@ -421,9 +549,29 @@ async def _send_enriched_notifications(emails: list[dict[str, Any]]) -> None:
             continue
 
         # Intent-aware buttons and metadata
-        intent_cfg = _INTENT_NTFY.get(intent) if intent else None
+        # Use follow-up-specific buttons if this is a thread reply
+        is_followup = followup_draft is not None
+        followup_orig_intent = e.get("_followup_original_intent")
 
-        if intent_cfg:
+        if is_followup and followup_orig_intent:
+            fu_cfg = _FOLLOWUP_NTFY.get(followup_orig_intent, _FOLLOWUP_NTFY.get("info_admin"))
+            action_parts = []
+            for btn_type, label, url_template in fu_cfg["buttons"]:
+                btn_url = api_url + url_template.replace("{id}", msg_id)
+                action_parts.append(
+                    f"{btn_type}, {label}, {btn_url}, method=POST, clear=true"
+                )
+            action_parts.append(f"view, View Email, {view_url}")
+            actions = "; ".join(action_parts)
+
+            fu_label = _INTENT_LABELS.get(followup_orig_intent, followup_orig_intent)
+            ntfy_title = f"Follow-up: {fu_label} - {subject[:40]}"
+            ntfy_tags = fu_cfg["tags"]
+            ntfy_priority = fu_cfg["priority"]
+
+        elif intent and _INTENT_NTFY.get(intent):
+            intent_cfg = _INTENT_NTFY[intent]
+
             # Build action buttons from intent config
             action_parts = []
             for btn_type, label, url_template in intent_cfg["buttons"]:
@@ -499,8 +647,10 @@ async def _record_with_action_plans(emails: list[dict[str, Any]]) -> None:
                 INSERT INTO processed_emails
                     (gmail_message_id, sender, subject, category, priority,
                      replyable, contact_id, action_plan, customer_context_summary,
-                     intent)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                     intent, message_id, in_reply_to, references_header,
+                     followup_of_draft_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                        $11, $12, $13, $14)
                 ON CONFLICT (gmail_message_id) DO NOTHING
                 """,
                 [
@@ -518,6 +668,10 @@ async def _record_with_action_plans(emails: list[dict[str, Any]]) -> None:
                         }) if e.get("_action_plan") else None,
                         e.get("_customer_summary"),
                         e.get("_intent"),
+                        e.get("message_id") or None,
+                        e.get("in_reply_to") or None,
+                        e.get("references") or None,
+                        e.get("_followup_draft_id"),
                     )
                     for e in emails
                 ],
@@ -673,6 +827,9 @@ async def run(task: ScheduledTask) -> dict:
     # 5. Process leads (CRM contact creation for web form submissions)
     await _process_lead_emails(emails)
 
+    # 5b. Detect follow-ups to threads Atlas participated in
+    followup_count = await _detect_followups(emails)
+
     # 6. CRM cross-reference (expanded: all replyable emails)
     crm_count = 0
     if cfg.crm_enabled:
@@ -697,17 +854,21 @@ async def run(task: ScheduledTask) -> dict:
         auto_executed = await _auto_execute_actions(emails, cfg)
 
     # 10. Send intent-aware ntfy notifications
+    # Include follow-ups even if rule-based classifier assigned lower priority --
+    # a reply to a thread Atlas participated in is always actionable.
     action_emails = [
         e for e in emails
-        if (e.get("priority") == "action_required" or e.get("category") == "lead")
+        if (e.get("priority") == "action_required"
+            or e.get("category") == "lead"
+            or e.get("_followup_draft"))
         and e.get("replyable") is not False
     ]
     if action_emails:
         await _send_enriched_notifications(action_emails)
 
     logger.info(
-        "Email intake: %d new, %d CRM matched, %d intent classified, %d auto-executed",
-        len(emails), crm_count, intent_count, auto_executed,
+        "Email intake: %d new, %d CRM matched, %d intent classified, %d auto-executed, %d follow-ups",
+        len(emails), crm_count, intent_count, auto_executed, followup_count,
     )
 
     return {
@@ -715,5 +876,6 @@ async def run(task: ScheduledTask) -> dict:
         "crm_matched": crm_count,
         "intent_classified": intent_count,
         "auto_executed": auto_executed,
+        "followups_detected": followup_count,
         "_skip_synthesis": True,
     }

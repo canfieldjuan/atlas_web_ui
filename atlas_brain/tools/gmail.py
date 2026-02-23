@@ -195,6 +195,21 @@ class GmailTransport:
         )
         return result
 
+    async def get_sent_message_id(self, gmail_message_id: str) -> str | None:
+        """Fetch RFC 2822 Message-ID of a sent Gmail message."""
+        token = await self._get_access_token()
+        client = await self._ensure_client()
+        resp = await client.get(
+            f"{GMAIL_API_BASE}/users/me/messages/{gmail_message_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"format": "metadata", "metadataHeaders": "Message-ID"},
+        )
+        resp.raise_for_status()
+        for header in resp.json().get("payload", {}).get("headers", []):
+            if header.get("name", "").lower() == "message-id":
+                return header.get("value", "").strip()
+        return None
+
 
 # Module-level singleton
 _transport: GmailTransport | None = None
