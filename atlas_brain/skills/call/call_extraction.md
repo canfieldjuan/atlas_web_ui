@@ -36,6 +36,7 @@ Respond with ONLY a JSON object (no markdown fences, no extra text):
     "frequency": "One of: one_time, weekly, biweekly, monthly, or null if not mentioned",
     "urgency": "One of: low, normal, high, urgent",
     "follow_up_needed": true or false,
+    "invoice_numbers_mentioned": ["INV-2026-0001"],
     "notes": "Brief summary of key details not captured above"
 }
 

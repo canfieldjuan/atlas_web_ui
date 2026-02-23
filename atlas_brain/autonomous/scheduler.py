@@ -393,6 +393,30 @@ class TaskScheduler:
             "timeout_seconds": 120,
             "metadata": {"builtin_handler": "email_stale_check"},
         },
+        {
+            "name": "invoice_overdue_check",
+            "description": "Daily scan for overdue invoices, mark and notify",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "0 9 * * *",
+            "timeout_seconds": 60,
+            "metadata": {
+                "builtin_handler": "invoice_overdue_check",
+                "synthesis_skill": "invoicing/overdue_notification",
+            },
+        },
+        {
+            "name": "invoice_payment_reminders",
+            "description": "Daily payment reminders for overdue invoices",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "0 10 * * *",
+            "timeout_seconds": 120,
+            "metadata": {
+                "builtin_handler": "invoice_payment_reminders",
+                "synthesis_skill": "invoicing/payment_reminder",
+            },
+        },
     ]
 
     async def _ensure_default_tasks(self) -> None:

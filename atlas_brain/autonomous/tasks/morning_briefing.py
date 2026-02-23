@@ -86,7 +86,10 @@ async def run(task: ScheduledTask) -> dict:
     # 7. Reminders due today
     result["reminders_today"] = await _get_reminders_today()
 
-    # 8. Knowledge graph context — historical facts about obligations and deadlines
+    # 8. Invoice summary
+    result["invoices"] = await _get_invoice_summary()
+
+    # 9. Knowledge graph context — historical facts about obligations and deadlines
     result["graph_context"] = await _get_graph_context()
 
     # Build summary
@@ -258,6 +261,32 @@ async def _get_reminders_today() -> dict:
         return {"count": 0, "items": [], "error": str(e)}
 
 
+async def _get_invoice_summary() -> dict:
+    """Fetch outstanding and overdue invoice counts."""
+    try:
+        from ...config import settings as _settings
+        if not _settings.invoicing.enabled:
+            return {}
+
+        from ...storage.repositories.invoice import get_invoice_repo
+        repo = get_invoice_repo()
+
+        outstanding = await repo.get_outstanding(limit=100)
+        overdue = [i for i in outstanding if i.get("status") == "overdue"]
+        total_outstanding = sum(float(i.get("amount_due", 0)) for i in outstanding)
+        total_overdue = sum(float(i.get("amount_due", 0)) for i in overdue)
+
+        return {
+            "outstanding_count": len(outstanding),
+            "outstanding_total": round(total_outstanding, 2),
+            "overdue_count": len(overdue),
+            "overdue_total": round(total_overdue, 2),
+        }
+    except Exception as e:
+        logger.warning("Invoice summary fetch failed: %s", e)
+        return {"error": str(e)}
+
+
 async def _get_graph_context() -> list[str]:
     """Query the knowledge graph for facts relevant to today's briefing.
 
@@ -345,5 +374,19 @@ def _build_summary(result: dict, security_hours: int) -> str:
     if reminders.get("count", 0) > 0:
         times = [r["time"] for r in reminders["items"][:3]]
         parts.append(f"{reminders['count']} reminder(s) today: {', '.join(times)}.")
+
+    # Invoices
+    invoices = result.get("invoices", {})
+    if invoices and "error" not in invoices:
+        outstanding = invoices.get("outstanding_count", 0)
+        overdue = invoices.get("overdue_count", 0)
+        if outstanding > 0:
+            parts.append(
+                f"{outstanding} outstanding invoice(s) totaling ${invoices.get('outstanding_total', 0):.2f}."
+            )
+        if overdue > 0:
+            parts.append(
+                f"{overdue} overdue totaling ${invoices.get('overdue_total', 0):.2f}."
+            )
 
     return " ".join(parts)

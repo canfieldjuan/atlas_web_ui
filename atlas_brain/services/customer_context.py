@@ -31,6 +31,7 @@ class CustomerContext:
     sent_emails: list[dict[str, Any]] = field(default_factory=list)
     inbox_emails: list[dict[str, Any]] = field(default_factory=list)
     sms_messages: list[dict[str, Any]] = field(default_factory=list)
+    invoices: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def contact_id(self) -> Optional[str]:
@@ -57,6 +58,7 @@ class CustomerContextService:
         max_appointments: int = 10,
         max_emails: int = 10,
         max_sms: int = 10,
+        max_invoices: int = 10,
     ) -> CustomerContext:
         """Build full customer context by contact_id.
 
@@ -74,6 +76,7 @@ class CustomerContextService:
         return await self._gather(
             contact, contact_id,
             max_interactions, max_calls, max_appointments, max_emails, max_sms,
+            max_invoices,
         )
 
     async def get_context_by_phone(
@@ -113,15 +116,18 @@ class CustomerContextService:
         max_appointments: int = 10,
         max_emails: int = 10,
         max_sms: int = 10,
+        max_invoices: int = 10,
     ) -> CustomerContext:
         """Fetch all supplementary data in parallel."""
         from .crm_provider import get_crm_provider
         from ..storage.repositories.call_transcript import get_call_transcript_repo
         from ..storage.repositories.sms_message import get_sms_message_repo
+        from ..storage.repositories.invoice import get_invoice_repo
 
         crm = get_crm_provider()
         call_repo = get_call_transcript_repo()
         sms_repo = get_sms_message_repo()
+        inv_repo = get_invoice_repo()
 
         async def _safe(coro, label: str, default=None):
             try:
@@ -154,10 +160,14 @@ class CustomerContextService:
             sms_repo.get_by_contact_id(contact_id, limit=max_sms),
             "sms_messages",
         )
+        invoices_coro = _safe(
+            inv_repo.get_by_contact_id(contact_id, limit=max_invoices),
+            "invoices",
+        )
 
-        interactions, appointments, calls, emails, inbox, sms = await asyncio.gather(
+        interactions, appointments, calls, emails, inbox, sms, invoices = await asyncio.gather(
             interactions_coro, appointments_coro, calls_coro,
-            emails_coro, inbox_coro, sms_coro,
+            emails_coro, inbox_coro, sms_coro, invoices_coro,
         )
 
         return CustomerContext(
@@ -168,6 +178,7 @@ class CustomerContextService:
             sent_emails=emails,
             inbox_emails=inbox,
             sms_messages=sms,
+            invoices=invoices,
         )
 
     async def _get_sent_emails(

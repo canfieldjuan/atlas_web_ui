@@ -182,6 +182,18 @@ async def process_call_recording(
             "Step 4/7 OK: Extracted data for %s: summary=%s actions=%d",
             call_sid, summary[:80], len(proposed_actions),
         )
+
+        # Cross-reference invoice numbers mentioned in transcript/summary
+        try:
+            from .invoice_detector import extract_invoice_numbers
+            inv_nums = extract_invoice_numbers(transcript + " " + (summary or ""))
+            if inv_nums:
+                extracted_data["invoice_numbers_mentioned"] = inv_nums
+                await repo.update_extraction(transcript_id, summary, extracted_data, proposed_actions)
+                logger.info("Invoice numbers found in call %s: %s", call_sid, inv_nums)
+        except Exception as inv_e:
+            logger.debug("Invoice detection skipped for %s: %s", call_sid, inv_e)
+
     except Exception as e:
         logger.error("Step 4/7 FAIL: Extraction for %s: %s", call_sid, e)
         await _safe_update_status(repo, transcript_id, "error", f"Extraction: {e}")

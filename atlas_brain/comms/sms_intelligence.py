@@ -130,6 +130,19 @@ async def process_inbound_sms(
             "Step 1/4 OK: SMS extraction intent=%s summary=%s",
             raw_intent, (summary or "")[:80],
         )
+
+        # Cross-reference invoice numbers mentioned in SMS body/summary
+        try:
+            from .invoice_detector import extract_invoice_numbers
+            inv_nums = extract_invoice_numbers(body + " " + (summary or ""))
+            if inv_nums:
+                extracted_data["invoice_numbers_mentioned"] = inv_nums
+                if sms_id:
+                    await repo.update_extraction(sms_id, extracted_data=extracted_data)
+                logger.info("Invoice numbers found in SMS: %s", inv_nums)
+        except Exception as inv_e:
+            logger.debug("Invoice detection skipped for SMS: %s", inv_e)
+
     except Exception as e:
         logger.error("Step 1/4 FAIL: SMS extraction: %s", e)
 

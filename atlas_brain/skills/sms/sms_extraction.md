@@ -35,6 +35,7 @@ Respond with ONLY a JSON object (no markdown fences, no extra text):
     "preferred_time": "Time preference if mentioned, or null",
     "urgency": "One of: low, normal, high, urgent",
     "follow_up_needed": true or false,
+    "invoice_numbers_mentioned": ["INV-2026-0001"],
     "notes": "Brief summary of key details not captured above"
 }
 
