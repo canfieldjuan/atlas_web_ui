@@ -82,7 +82,7 @@ async def run(task: ScheduledTask) -> dict:
     if not provider.is_configured():
         return {"_skip_synthesis": "IMAP not configured"}
 
-    owner_email = settings.email_intake.imap_username or ""
+    owner_email = settings.email.imap_username or ""
 
     # Date-range chunking: split into windows to work around 200-result IMAP cap.
     all_emails: list[dict[str, Any]] = []
