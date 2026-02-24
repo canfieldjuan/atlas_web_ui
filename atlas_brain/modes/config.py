@@ -88,7 +88,7 @@ MODE_CONFIGS: dict[ModeType, ModeConfig] = {
         name="comms",
         description="Personal communications - phone, email, video chat, text",
         tools=[
-            "make_call",
+            # make_call excluded -- only accessible through call workflow
             "send_email",
             "send_notification",
             # Reminders for personal use

@@ -220,6 +220,11 @@ def _create_streaming_agent_runner():
                     # Conversation needs LLM -- trigger prefill now
                     if _voice_pipeline is not None:
                         _voice_pipeline.trigger_prefill()
+                    # Note: if the semantic router misclassifies a workflow
+                    # command as "conversation" here, the streaming path has
+                    # no tool access, so no unauthorized actions occur -- the
+                    # user just gets a wrong text reply. The fix for this is
+                    # improving the router's training data, not re-routing.
                 else:
                     logger.info(
                         "Non-streaming path: %s/%s (conf=%.2f, skipping prefill)",
