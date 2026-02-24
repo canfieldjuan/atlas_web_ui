@@ -527,9 +527,10 @@ if __name__ == "__main__":
     sse_mode = "--sse" in sys.argv
     if sse_mode:
         from ..config import settings
+        from .auth import run_sse_with_auth
 
         mcp.settings.host = settings.mcp.host
         mcp.settings.port = settings.mcp.calendar_port
-        mcp.run(transport="sse")
+        run_sse_with_auth(mcp, settings.mcp.host, settings.mcp.calendar_port)
     else:
         mcp.run(transport="stdio")

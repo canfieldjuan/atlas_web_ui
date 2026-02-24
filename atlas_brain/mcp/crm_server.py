@@ -520,9 +520,10 @@ if __name__ == "__main__":
     transport = "sse" if "--sse" in sys.argv else "stdio"
     if transport == "sse":
         from ..config import settings
+        from .auth import run_sse_with_auth
 
         mcp.settings.host = settings.mcp.host
         mcp.settings.port = settings.mcp.crm_port
-        mcp.run(transport="sse")
+        run_sse_with_auth(mcp, settings.mcp.host, settings.mcp.crm_port)
     else:
         mcp.run(transport="stdio")
