@@ -1,6 +1,6 @@
 """
 News intake: poll news APIs, match against watchlist keywords,
-deduplicate, and emit news.* events.
+deduplicate, and store in news_articles for daily intelligence.
 
 Supports Mediastack (requires key) and Google News RSS (free fallback).
 Runs as an autonomous task on a configurable interval (default 15 min).
@@ -9,6 +9,7 @@ Runs as an autonomous task on a configurable interval (default 15 min).
 import asyncio
 import hashlib
 import logging
+import uuid
 from typing import Any
 
 from ...config import settings
@@ -19,7 +20,7 @@ logger = logging.getLogger("atlas.autonomous.tasks.news_intake")
 
 
 async def run(task: ScheduledTask) -> dict[str, Any]:
-    """Autonomous task handler: poll news and emit events."""
+    """Autonomous task handler: poll news and store articles for daily intelligence."""
     cfg = settings.external_data
     if not cfg.enabled or not cfg.news_enabled:
         return {"_skip_synthesis": True, "skipped": "external_data or news disabled"}
@@ -40,7 +41,7 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         """
     )
     if not rows:
-        return {"_skip_synthesis": True, "fetched": 0, "emitted": 0}
+        return {"_skip_synthesis": True, "fetched": 0, "stored": 0}
 
     # Build keyword set and watchlist lookup
     all_keywords: set[str] = set()
@@ -80,9 +81,9 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         cfg.news_max_articles_per_poll, cfg,
     )
     if not articles:
-        return {"_skip_synthesis": True, "fetched": 0, "emitted": 0}
+        return {"_skip_synthesis": True, "fetched": 0, "stored": 0}
 
-    emitted = 0
+    stored = 0
     for article in articles:
         title_lower = (article.get("title") or "").lower()
         desc_lower = (article.get("description") or "").lower()
@@ -105,56 +106,45 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         url = article.get("url", "")
         dedup_key = hashlib.sha256(url.encode()).hexdigest()
 
-        inserted = await pool.fetchval(
-            """
-            INSERT INTO data_dedup (source, dedup_key)
-            VALUES ('news', $1)
-            ON CONFLICT (source, dedup_key) DO NOTHING
-            RETURNING id
-            """,
-            dedup_key,
-        )
-        if not inserted:
-            continue  # already processed
-
         # Check if any matched keywords overlap with market symbols
         is_market_moving = bool(matched_keywords & market_symbols)
 
-        # Build event payload
-        payload = {
-            "article_id": dedup_key,
-            "title": article.get("title", "")[:500],
-            "source_name": article.get("source_name", "unknown"),
-            "url": url,
-            "published_at": article.get("published_at", ""),
-            "summary": (article.get("description") or "")[:500],
-            "matched_interests": sorted(matched_keywords),
-            "matched_watchlist_ids": matched_watchlist_ids,
-        }
+        title = article.get("title", "")[:500]
+        source_name = article.get("source_name", "unknown")
+        published_at = article.get("published_at", "")
+        summary = (article.get("description") or "")[:500]
 
-        from ...reasoning.producers import emit_if_enabled
-        from ...reasoning.events import EventType
+        # Store in news_articles for daily intelligence analysis
+        try:
+            wl_uuids = [uuid.UUID(wid) for wid in matched_watchlist_ids]
+            inserted = await pool.fetchval(
+                """
+                INSERT INTO news_articles (dedup_key, title, source_name, url, published_at,
+                                           summary, matched_keywords, matched_watchlist_ids, is_market_related)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid[], $9)
+                ON CONFLICT (dedup_key) DO NOTHING
+                RETURNING id
+                """,
+                dedup_key, title, source_name, url, published_at, summary,
+                sorted(matched_keywords), wl_uuids, is_market_moving,
+            )
+        except Exception:
+            logger.debug("news_articles insert failed for %s", dedup_key, exc_info=True)
+            inserted = None
 
-        event_type = (
-            EventType.NEWS_MARKET_MOVING if is_market_moving
-            else EventType.NEWS_SIGNIFICANT
-        )
+        if not inserted:
+            continue  # already stored
 
-        await emit_if_enabled(
-            event_type=event_type,
-            source="news_intake",
-            payload=payload,
-        )
-        emitted += 1
+        stored += 1
         logger.info(
-            "News event: [%s] %s (matched: %s)",
-            event_type, article.get("title", "")[:80], ", ".join(sorted(matched_keywords)),
+            "Stored news article: %s (matched: %s, market=%s)",
+            title[:80], ", ".join(sorted(matched_keywords)), is_market_moving,
         )
 
     return {
         "_skip_synthesis": True,
         "fetched": len(articles),
-        "emitted": emitted,
+        "stored": stored,
     }
 
 

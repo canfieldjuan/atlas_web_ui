@@ -1,9 +1,9 @@
 """
-Market data intake: poll prices for watchlist symbols, detect significant
-moves, record snapshots, emit market.* events.
+Market data intake: poll prices for watchlist symbols, record snapshots.
 
 Uses Alpha Vantage (free tier: 25 req/day) by default. Runs as an
 autonomous task on a configurable interval (default 5 min).
+Daily intelligence derives significance from raw snapshots at analysis time.
 """
 
 import asyncio
@@ -19,7 +19,7 @@ logger = logging.getLogger("atlas.autonomous.tasks.market_intake")
 
 
 async def run(task: ScheduledTask) -> dict[str, Any]:
-    """Autonomous task handler: poll market prices and emit events."""
+    """Autonomous task handler: poll market prices and record snapshots."""
     cfg = settings.external_data
     if not cfg.enabled or not cfg.market_enabled:
         return {"_skip_synthesis": True, "skipped": "external_data or market disabled"}
@@ -43,7 +43,7 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         """
     )
     if not rows:
-        return {"_skip_synthesis": True, "symbols_checked": 0, "emitted": 0}
+        return {"_skip_synthesis": True, "symbols_checked": 0, "snapshots_recorded": 0}
 
     watchlist = {r["symbol"]: dict(r) for r in rows}
     symbols = list(watchlist.keys())
@@ -53,7 +53,7 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         symbols, cfg.market_api_provider, cfg.market_api_key, cfg.api_timeout_seconds
     )
     if not quotes:
-        return {"_skip_synthesis": True, "symbols_checked": len(symbols), "emitted": 0, "error": "no quotes"}
+        return {"_skip_synthesis": True, "symbols_checked": len(symbols), "snapshots_recorded": 0, "error": "no quotes"}
 
     # Record snapshots
     snapshot_rows = []
@@ -74,8 +74,8 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
             snapshot_rows,
         )
 
-    # Detect significant moves
-    emitted = 0
+    # Log significant moves (informational only; daily intelligence derives insights)
+    significant = 0
     for sym, q in quotes.items():
         wl = watchlist.get(sym)
         if not wl:
@@ -86,46 +86,10 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         if change_pct is None or abs(change_pct) < threshold:
             continue
 
-        # Dedup: one alert per symbol per direction per day
+        significant += 1
         direction = "up" if change_pct > 0 else "down"
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        dedup_key = f"{sym}:{today}:{direction}"
-
-        inserted = await pool.fetchval(
-            """
-            INSERT INTO data_dedup (source, dedup_key)
-            VALUES ('market', $1)
-            ON CONFLICT (source, dedup_key) DO NOTHING
-            RETURNING id
-            """,
-            dedup_key,
-        )
-        if not inserted:
-            continue  # already emitted today
-
-        # Emit event
-        from ...reasoning.producers import emit_if_enabled
-
-        payload = {
-            "symbol": sym,
-            "name": wl["name"],
-            "asset_type": wl["category"],
-            "current_price": float(q["price"]),
-            "previous_close": float(q.get("previous_close", 0)),
-            "change_pct": round(float(change_pct), 2),
-            "threshold_pct": float(threshold),
-            "matched_watchlist_id": str(wl["id"]),
-        }
-        from ...reasoning.events import EventType
-
-        await emit_if_enabled(
-            event_type=EventType.MARKET_SIGNIFICANT_MOVE,
-            source="market_intake",
-            payload=payload,
-        )
-        emitted += 1
         logger.info(
-            "Market alert: %s %s %.2f%% (threshold %.1f%%)",
+            "Significant move: %s %s %.2f%% (threshold %.1f%%)",
             sym, direction, change_pct, threshold,
         )
 
@@ -133,7 +97,7 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         "_skip_synthesis": True,
         "symbols_checked": len(symbols),
         "snapshots_recorded": len(snapshot_rows),
-        "emitted": emitted,
+        "significant_moves": significant,
     }
 
 

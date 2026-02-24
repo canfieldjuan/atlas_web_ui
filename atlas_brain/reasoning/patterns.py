@@ -168,21 +168,20 @@ async def detect_news_market_correlation() -> list[dict[str, Any]]:
     try:
         rows = await pool.fetch(
             """
-            SELECT ne.id AS news_event_id,
-                   ne.payload->>'title' AS news_title,
-                   ne.payload->'matched_interests' AS matched_interests,
-                   ne.created_at AS news_at,
+            SELECT na.id AS news_article_id,
+                   na.title AS news_title,
+                   na.matched_keywords,
+                   na.created_at AS news_at,
                    ms.symbol, ms.price, ms.change_pct, ms.snapshot_at,
                    dw.name AS asset_name
-            FROM atlas_events ne
+            FROM news_articles na
             JOIN data_watchlist dw ON dw.enabled = true
                 AND dw.category IN ('stock','etf','commodity','crypto','forex')
             JOIN market_snapshots ms ON ms.symbol = dw.symbol
-                AND ms.snapshot_at > ne.created_at
-                AND ms.snapshot_at < ne.created_at + make_interval(hours => $1)
+                AND ms.snapshot_at > na.created_at
+                AND ms.snapshot_at < na.created_at + make_interval(hours => $1)
                 AND ABS(ms.change_pct) >= COALESCE(dw.threshold_pct, 5.0)
-            WHERE ne.event_type LIKE 'news.%'
-              AND ne.created_at > NOW() - make_interval(hours => $2)
+            WHERE na.created_at > NOW() - make_interval(hours => $2)
             ORDER BY ABS(ms.change_pct) DESC
             LIMIT 10
             """,
@@ -196,7 +195,7 @@ async def detect_news_market_correlation() -> list[dict[str, Any]]:
     seen = set()
     findings = []
     for r in rows:
-        key = f"{r['news_event_id']}:{r['symbol']}"
+        key = f"{r['news_article_id']}:{r['symbol']}"
         if key in seen:
             continue
         seen.add(key)
@@ -209,7 +208,7 @@ async def detect_news_market_correlation() -> list[dict[str, Any]]:
             ),
             "entity_type": None,
             "entity_id": None,
-            "news_event_id": str(r["news_event_id"]),
+            "news_article_id": str(r["news_article_id"]),
             "symbol": r["symbol"],
             "change_pct": float(r["change_pct"]),
         })

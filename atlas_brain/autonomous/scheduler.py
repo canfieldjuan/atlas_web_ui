@@ -453,7 +453,7 @@ class TaskScheduler:
         },
         {
             "name": "news_intake",
-            "description": "Poll news feeds, match watchlist keywords, emit news events",
+            "description": "Poll news feeds, match watchlist keywords, store for daily intelligence",
             "task_type": "builtin",
             "schedule_type": "interval",
             "interval_seconds": None,  # resolved from settings.external_data.news_interval_seconds
@@ -462,12 +462,25 @@ class TaskScheduler:
         },
         {
             "name": "market_intake",
-            "description": "Poll market prices for watchlist symbols, detect significant moves",
+            "description": "Poll market prices for watchlist symbols, store snapshots for daily intelligence",
             "task_type": "builtin",
             "schedule_type": "interval",
             "interval_seconds": None,  # resolved from settings.external_data.market_interval_seconds
             "timeout_seconds": 60,
             "metadata": {"builtin_handler": "market_intake"},
+        },
+        {
+            "name": "daily_intelligence",
+            "description": "Daily deep analysis of accumulated market, news, and business data",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "0 20 * * *",
+            "timeout_seconds": 300,
+            "metadata": {
+                "builtin_handler": "daily_intelligence",
+                "notify_priority": "default",
+                "notify_tags": "brain,chart_with_upwards_trend",
+            },
         },
     ]
 
@@ -591,6 +604,7 @@ class TaskScheduler:
                 "model_swap_night": settings.llm.model_swap_night_cron,
                 "email_graph_sync": "0 1 * * *",
                 "reasoning_reflection": settings.reasoning.reflection_cron,
+                "daily_intelligence": settings.external_data.intelligence_cron,
             }
 
             for task_name, desired_cron in cron_overrides.items():

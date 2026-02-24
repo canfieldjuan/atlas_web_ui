@@ -434,6 +434,36 @@ class HeadlessRunner:
             except Exception as e:
                 logger.debug("Market snapshots cleanup skipped: %s", e)
 
+            # News articles cleanup
+            try:
+                from ..config import settings as _settings
+                news_retention = _settings.external_data.intelligence_news_retention_days
+                news_result = await pool.execute(
+                    """
+                    DELETE FROM news_articles
+                    WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
+                    """,
+                    news_retention,
+                )
+                result["news_articles_cleaned"] = news_result
+            except Exception as e:
+                logger.debug("News articles cleanup skipped: %s", e)
+
+            # Reasoning journal cleanup
+            try:
+                from ..config import settings as _settings
+                journal_retention = _settings.external_data.intelligence_journal_retention_days
+                journal_result = await pool.execute(
+                    """
+                    DELETE FROM reasoning_journal
+                    WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
+                    """,
+                    journal_retention,
+                )
+                result["reasoning_journal_cleaned"] = journal_result
+            except Exception as e:
+                logger.debug("Reasoning journal cleanup skipped: %s", e)
+
         return result
 
 

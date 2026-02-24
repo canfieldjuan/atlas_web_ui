@@ -1892,6 +1892,14 @@ class ExternalDataConfig(BaseSettings):
     correlation_news_lookback_hours: int = Field(default=48, description="Hours to look back for news in correlation detection")
     correlation_market_window_hours: int = Field(default=24, description="Hours after news to check for correlated market moves")
     retention_days: int = Field(default=30, description="Days to retain dedup entries and market snapshots")
+    # Daily intelligence
+    intelligence_enabled: bool = Field(default=True, description="Enable daily intelligence analysis task")
+    intelligence_cron: str = Field(default="0 20 * * *", description="Cron for daily intelligence (default 8 PM)")
+    intelligence_analysis_window_days: int = Field(default=7, description="Days of data to include in analysis")
+    intelligence_max_prior_sessions: int = Field(default=5, description="Max prior reasoning journal entries to include")
+    intelligence_max_tokens: int = Field(default=4096, description="Max tokens for intelligence LLM call")
+    intelligence_journal_retention_days: int = Field(default=90, description="Days to retain reasoning journal entries")
+    intelligence_news_retention_days: int = Field(default=30, description="Days to retain news articles")
     # API tuning
     news_max_keywords_per_query: int = Field(default=10, description="Max keywords per NewsAPI query")
     news_max_rss_feeds: int = Field(default=5, description="Max Google RSS feeds to poll per cycle")

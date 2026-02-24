@@ -265,7 +265,7 @@ async def _fetch_market_context() -> list[dict[str, Any]]:
 
 
 async def _fetch_news_context() -> list[dict[str, Any]]:
-    """Fetch recent news events."""
+    """Fetch recent news articles stored by news_intake."""
     from ..config import settings
     from ..storage.database import get_db_pool
 
@@ -278,10 +278,10 @@ async def _fetch_news_context() -> list[dict[str, Any]]:
     try:
         rows = await pool.fetch(
             """
-            SELECT id, event_type, payload, created_at
-            FROM atlas_events
-            WHERE event_type LIKE 'news.%'
-              AND created_at > NOW() - make_interval(hours => $1)
+            SELECT id, title, source_name, url, summary,
+                   matched_keywords, is_market_related, created_at
+            FROM news_articles
+            WHERE created_at > NOW() - make_interval(hours => $1)
             ORDER BY created_at DESC
             LIMIT 20
             """,
