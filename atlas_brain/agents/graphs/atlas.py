@@ -242,9 +242,24 @@ async def classify_and_route(
 
     classify_ms = (time.perf_counter() - start_time) * 1000
 
-    # 1. Workflow routes (reminder, email, calendar_write, booking) -> start_workflow
-    if route_name in ROUTE_TO_WORKFLOW and confidence >= threshold:
+    # 1. Workflow routes (reminder, email, calendar_write, booking, call) -> start_workflow
+    # In conversation mode, use a lower confidence floor so borderline workflow
+    # intents (e.g. "call Juan" at 0.40) don't fall through to the general LLM
+    # tool path. Applies to all workflow routes -- during active conversation the
+    # user is more likely issuing commands than chatting about them.
+    in_conversation = state.get("runtime_context", {}).get("in_conversation_mode", False)
+    workflow_conf_floor = (
+        settings.intent_router.conversation_workflow_confidence_floor
+        if in_conversation else threshold
+    )
+    if route_name in ROUTE_TO_WORKFLOW and confidence >= workflow_conf_floor:
         workflow_type = ROUTE_TO_WORKFLOW[route_name]
+        if in_conversation and confidence < threshold:
+            logger.info(
+                "Conversation workflow breakout: using lower confidence floor "
+                "(%.2f < %.2f) for %s",
+                confidence, threshold, workflow_type,
+            )
         logger.info(
             "Route -> start_workflow/%s (conf=%.2f, %.0fms)",
             workflow_type, confidence, classify_ms,

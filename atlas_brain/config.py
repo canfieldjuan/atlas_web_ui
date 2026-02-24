@@ -1305,6 +1305,16 @@ class IntentRouterConfig(BaseSettings):
         le=1.0,
         description="Min confidence to skip LLM parse for conversation queries",
     )
+    conversation_workflow_confidence_floor: float = Field(
+        default=0.30,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Lower confidence floor for workflow routes when in conversation mode. "
+            "Prevents borderline workflow intents from falling through to the "
+            "general LLM tool path during active conversation."
+        ),
+    )
 
 
 class DeviceResolverConfig(BaseSettings):

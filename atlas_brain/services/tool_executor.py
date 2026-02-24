@@ -31,7 +31,7 @@ EMPTY_RESPONSE_FALLBACK = "Sorry, I wasn't able to process that."
 PRIORITY_TOOL_NAMES = [
     "get_time", "get_weather", "get_calendar", "get_location",
     "set_reminder", "list_reminders", "send_notification",
-    "send_email", "make_call", "check_availability", "book_appointment",
+    "send_email", "check_availability", "book_appointment",
     "cancel_appointment", "reschedule_appointment",
     # MCP-provided tools (read-heavy set for general conversation)
     "search_contacts", "get_contact", "get_customer_context",

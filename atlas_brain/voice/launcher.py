@@ -185,6 +185,24 @@ def _create_streaming_agent_runner():
                         route_result.confidence
                     )
                 # Prefill already triggered by early silence
+
+                # Conversation mode workflow breakout: if cached prep returned
+                # "conversation" but the full transcript might be a workflow trigger,
+                # re-classify fresh to avoid masking workflow routes.
+                if (use_streaming
+                        and _voice_pipeline is not None
+                        and _voice_pipeline.frame_processor.state == "conversing"):
+                    from ..services.intent_router import ROUTE_TO_WORKFLOW
+                    fresh_route = await route_query(transcript)
+                    if fresh_route.raw_label in ROUTE_TO_WORKFLOW:
+                        route_result = fresh_route
+                        _last_route_result["result"] = route_result
+                        use_streaming = False
+                        logger.info(
+                            "Workflow breakout: %s detected over cached conversation "
+                            "(conf=%.2f)",
+                            fresh_route.raw_label, fresh_route.confidence,
+                        )
             elif settings.intent_router.enabled and not has_active_workflow:
                 _classify_t0 = _time.perf_counter()
                 route_result = await route_query(transcript)
@@ -736,6 +754,9 @@ async def _run_agent_fallback(
     speaker_id = context_dict.get("speaker_id")
     speaker_name = context_dict.get("speaker_name")
     runtime_ctx: Dict[str, Any] = {"node_id": node_id, "speaker_uuid": speaker_id}
+    if (_voice_pipeline is not None
+            and _voice_pipeline.frame_processor.state == "conversing"):
+        runtime_ctx["in_conversation_mode"] = True
     if pre_route_result is not None:
         runtime_ctx["pre_route_result"] = pre_route_result
     try:

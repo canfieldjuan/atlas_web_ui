@@ -255,3 +255,80 @@ class TestCallPersonSemanticRouting:
         """'remind me to call the dentist' must NOT route to call_person."""
         result = await loaded_router.route("remind me to call the dentist")
         assert result.raw_label != "call_person"
+
+
+# ------------------------------------------------------------------ #
+# Conversation mode breakout (defense-in-depth)
+# ------------------------------------------------------------------ #
+
+
+class TestConversationModeBreakout:
+    """Workflow breakout guards for conversation mode."""
+
+    @pytest.mark.asyncio
+    async def test_classify_and_route_uses_lower_threshold_in_conversation(self):
+        """classify_and_route dispatches to start_workflow when
+        in_conversation_mode=True and confidence is between 0.30 and 0.50."""
+        from types import SimpleNamespace
+        from atlas_brain.agents.graphs.atlas import classify_and_route
+
+        route_result = SimpleNamespace(
+            action_category="tool_use",
+            raw_label="call_person",
+            tool_name="make_call",
+            confidence=0.40,
+            entity_name="Juan",
+        )
+
+        state = {
+            "input_text": "call Juan",
+            "runtime_context": {
+                "in_conversation_mode": True,
+                "pre_route_result": route_result,
+            },
+        }
+
+        result = await classify_and_route(state)
+        # Should route to start_workflow despite 0.40 < 0.50 threshold
+        assert result.update["action_type"] == "workflow_start"
+        assert result.update["workflow_to_start"] == "call"
+
+    @pytest.mark.asyncio
+    async def test_classify_and_route_normal_threshold_outside_conversation(self):
+        """Outside conversation mode, 0.40 confidence should NOT trigger workflow."""
+        from types import SimpleNamespace
+        from atlas_brain.agents.graphs.atlas import classify_and_route
+
+        route_result = SimpleNamespace(
+            action_category="tool_use",
+            raw_label="call_person",
+            tool_name="make_call",
+            confidence=0.40,
+            entity_name="Juan",
+        )
+
+        state = {
+            "input_text": "call Juan",
+            "runtime_context": {
+                "pre_route_result": route_result,
+            },
+        }
+
+        result = await classify_and_route(state)
+        # 0.40 < 0.50 threshold -> should NOT route to workflow
+        assert result.update.get("action_type") != "workflow_start"
+
+    def test_make_call_not_in_priority_tools(self):
+        """make_call must not be in PRIORITY_TOOL_NAMES (defense-in-depth)."""
+        from atlas_brain.services.tool_executor import PRIORITY_TOOL_NAMES
+
+        assert "make_call" not in PRIORITY_TOOL_NAMES
+
+    def test_conversation_flag_propagated_in_run_agent_fallback(self):
+        """_run_agent_fallback sets in_conversation_mode in runtime_ctx
+        when voice pipeline state is 'conversing'."""
+        from atlas_brain.voice.launcher import _run_agent_fallback
+
+        source = inspect.getsource(_run_agent_fallback)
+        assert "in_conversation_mode" in source
+        assert 'state == "conversing"' in source
