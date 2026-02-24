@@ -257,21 +257,26 @@ async def lifespan(app: FastAPI):
     event_bus = None
     event_consumer = None
     if settings.reasoning.enabled:
-        from .services.llm_router import init_reasoning_llm
-        init_reasoning_llm(
-            model=settings.reasoning.model,
-            api_key=settings.llm.anthropic_api_key,
-        )
+        try:
+            from .services.llm_router import init_reasoning_llm
+            init_reasoning_llm(
+                model=settings.reasoning.model,
+                api_key=settings.llm.anthropic_api_key,
+            )
 
-        from .reasoning.event_bus import EventBus
-        event_bus = EventBus()
-        await event_bus.start()
-        logger.info("Reasoning event bus started")
+            from .reasoning.event_bus import EventBus
+            event_bus = EventBus()
+            await event_bus.start()
+            logger.info("Reasoning event bus started")
 
-        from .reasoning.consumer import EventConsumer
-        event_consumer = EventConsumer(event_bus)
-        await event_consumer.start()
-        logger.info("Reasoning event consumer started")
+            from .reasoning.consumer import EventConsumer
+            event_consumer = EventConsumer(event_bus)
+            await event_consumer.start()
+            logger.info("Reasoning event consumer started")
+        except Exception as e:
+            logger.error("Reasoning subsystem failed to start (non-fatal): %s", e)
+            event_bus = None
+            event_consumer = None
 
     # Note: Speaker ID loaded lazily via get_speaker_id_service() when voice
     # pipeline starts. No registry needed - single Resemblyzer implementation.

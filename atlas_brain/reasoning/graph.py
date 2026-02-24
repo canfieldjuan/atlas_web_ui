@@ -21,8 +21,14 @@ _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL)
 
 
 async def _llm_generate(llm, prompt: str, system_prompt: str,
-                         max_tokens: int = 1024, temperature: float = 0.3) -> str:
-    """Call LLM.chat() from async context and return response text."""
+                         max_tokens: int = 1024, temperature: float = 0.3,
+                         timeout: float = 120.0) -> str:
+    """Call LLM.chat() from async context and return response text.
+
+    Args:
+        timeout: Maximum seconds to wait for the LLM response (default 120s).
+                 Raises asyncio.TimeoutError if exceeded.
+    """
     from ..services.protocols import Message
 
     messages = [
@@ -31,11 +37,17 @@ async def _llm_generate(llm, prompt: str, system_prompt: str,
     ]
     # Prefer async if available; fall back to sync via thread
     if hasattr(llm, "chat_async"):
-        return await llm.chat_async(
-            messages=messages, max_tokens=max_tokens, temperature=temperature,
+        return await asyncio.wait_for(
+            llm.chat_async(
+                messages=messages, max_tokens=max_tokens, temperature=temperature,
+            ),
+            timeout=timeout,
         )
-    result = await asyncio.to_thread(
-        llm.chat, messages=messages, max_tokens=max_tokens, temperature=temperature,
+    result = await asyncio.wait_for(
+        asyncio.to_thread(
+            llm.chat, messages=messages, max_tokens=max_tokens, temperature=temperature,
+        ),
+        timeout=timeout,
     )
     return result.get("response", "")
 

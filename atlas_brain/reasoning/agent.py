@@ -19,7 +19,7 @@ class ReasoningAgentGraph:
     """Singleton that processes events through the reasoning graph."""
 
     def __init__(self) -> None:
-        self._processing = False
+        pass
 
     async def process_event(self, event: AtlasEvent) -> dict[str, Any]:
         """Run a single event through the reasoning graph.

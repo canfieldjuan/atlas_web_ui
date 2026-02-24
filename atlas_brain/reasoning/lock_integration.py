@@ -116,4 +116,4 @@ async def heartbeat_voice_session(session_id: str) -> None:
             session_id,
         )
     except Exception:
-        pass  # heartbeat failure is non-fatal
+        logger.debug("Heartbeat failed for session %s", session_id, exc_info=True)

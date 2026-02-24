@@ -50,16 +50,21 @@ async def run(task: ScheduledTask) -> dict:
         event = AtlasEvent.from_row(dict(row))
         try:
             result = await agent.process_event(event)
-            await pool.execute(
+            # Guard: only mark processed if not already handled by EventBus consumer
+            tag = await pool.execute(
                 """
                 UPDATE atlas_events
                 SET processed_at = NOW(), processing_result = $1::jsonb
                 WHERE id = $2
+                  AND processed_at IS NULL
                 """,
                 json.dumps(result, default=str),
                 event.id,
             )
-            processed += 1
+            if tag and tag == "UPDATE 1":
+                processed += 1
+            else:
+                logger.debug("reasoning_tick: event %s already processed, skipping", event.id)
         except Exception:
             logger.warning("reasoning_tick: failed to process event %s", event.id, exc_info=True)
 

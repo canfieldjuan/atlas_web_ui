@@ -822,6 +822,8 @@ class VoicePipeline:
         # speaking so that a slow command cannot overwrite a newer one's output.
         self._command_gen = 0
         self._command_gen_lock = threading.Lock()
+        # Entity lock heartbeat (reasoning agent sovereignty)
+        self._last_lock_heartbeat: float = 0.0
 
         self.segmenter = CommandSegmenter(
             sample_rate=self.sample_rate,
@@ -1057,6 +1059,19 @@ class VoicePipeline:
 
     def _process_frame(self, frame_bytes: bytes):
         """Process an audio frame."""
+        # Heartbeat entity locks every ~30s to prevent expiry during long sessions
+        now = time.monotonic()
+        if now - self._last_lock_heartbeat > 30:
+            self._last_lock_heartbeat = now
+            if self.event_loop is not None:
+                try:
+                    from ..reasoning.lock_integration import heartbeat_voice_session
+                    asyncio.run_coroutine_threadsafe(
+                        heartbeat_voice_session(self.session_id), self.event_loop
+                    )
+                except Exception:
+                    pass  # non-fatal; heartbeat_voice_session has its own guards
+
         self.frame_processor.process_frame(
             frame_bytes=frame_bytes,
             is_speaking=self.playback.speaking.is_set(),

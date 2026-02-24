@@ -7,6 +7,7 @@ that the reflection node can act on.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger("atlas.reasoning.patterns")
@@ -37,24 +38,24 @@ async def detect_stale_threads() -> list[dict[str, Any]]:
         LIMIT 20
         """
     )
-    return [
-        {
+    findings = []
+    for r in rows:
+        sent_at = r.get("sent_at")
+        if not sent_at:
+            continue
+        findings.append({
             "pattern": "stale_thread",
             "description": (
                 f"Reply to {r['original_from']} re: {r['draft_subject']} "
-                f"sent {r['sent_at'].strftime('%b %d')} with no response"
+                f"sent {sent_at.strftime('%b %d')} with no response"
             ),
             "entity_type": "contact",
             "entity_id": r.get("contact_id"),
             "draft_id": str(r["draft_id"]),
             "original_intent": r.get("intent"),
-            "days_since_reply": (
-                (__import__("datetime").datetime.now(__import__("datetime").timezone.utc)
-                 - r["sent_at"]).days
-            ),
-        }
-        for r in rows
-    ]
+            "days_since_reply": (datetime.now(timezone.utc) - sent_at).days,
+        })
+    return findings
 
 
 async def detect_scheduling_gaps() -> list[dict[str, Any]]:
@@ -85,19 +86,22 @@ async def detect_scheduling_gaps() -> list[dict[str, Any]]:
         LIMIT 20
         """
     )
-    return [
-        {
+    findings = []
+    for r in rows:
+        sent_at = r.get("sent_at")
+        if not sent_at:
+            continue
+        findings.append({
             "pattern": "scheduling_gap",
             "description": (
-                f"Estimate for {r['original_from']} sent {r['sent_at'].strftime('%b %d')} "
+                f"Estimate for {r['original_from']} sent {sent_at.strftime('%b %d')} "
                 f"but no appointment booked"
             ),
             "entity_type": "contact",
             "entity_id": r.get("contact_id"),
             "draft_id": str(r["draft_id"]),
-        }
-        for r in rows
-    ]
+        })
+    return findings
 
 
 async def detect_missing_followups() -> list[dict[str, Any]]:
@@ -130,28 +134,36 @@ async def detect_missing_followups() -> list[dict[str, Any]]:
         # invoices table may not exist
         return []
 
-    return [
-        {
+    findings = []
+    for r in rows:
+        scheduled_at = r.get("scheduled_at")
+        if not scheduled_at:
+            continue
+        findings.append({
             "pattern": "missing_followup",
             "description": (
                 f"Appointment with {r.get('full_name', 'unknown')} on "
-                f"{r['scheduled_at'].strftime('%b %d')} completed but no invoice"
+                f"{scheduled_at.strftime('%b %d')} completed but no invoice"
             ),
             "entity_type": "contact",
             "entity_id": r.get("contact_id"),
             "appointment_id": str(r["appointment_id"]),
-        }
-        for r in rows
-    ]
+        })
+    return findings
 
 
 async def detect_news_market_correlation() -> list[dict[str, Any]]:
-    """Find news events from last 48h that correlate with significant price moves within 24h."""
+    """Find news events that correlate with significant price moves."""
+    from ..config import settings
     from ..storage.database import get_db_pool
 
     pool = get_db_pool()
     if not pool.is_initialized:
         return []
+
+    cfg = settings.external_data
+    news_lookback = cfg.correlation_news_lookback_hours
+    market_window = cfg.correlation_market_window_hours
 
     try:
         rows = await pool.fetch(
@@ -167,13 +179,15 @@ async def detect_news_market_correlation() -> list[dict[str, Any]]:
                 AND dw.category IN ('stock','etf','commodity','crypto','forex')
             JOIN market_snapshots ms ON ms.symbol = dw.symbol
                 AND ms.snapshot_at > ne.created_at
-                AND ms.snapshot_at < ne.created_at + INTERVAL '24 hours'
+                AND ms.snapshot_at < ne.created_at + make_interval(hours => $1)
                 AND ABS(ms.change_pct) >= COALESCE(dw.threshold_pct, 5.0)
             WHERE ne.event_type LIKE 'news.%'
-              AND ne.created_at > NOW() - INTERVAL '48 hours'
+              AND ne.created_at > NOW() - make_interval(hours => $2)
             ORDER BY ABS(ms.change_pct) DESC
             LIMIT 10
-            """
+            """,
+            market_window,
+            news_lookback,
         )
     except Exception:
         logger.debug("News-market correlation query failed", exc_info=True)

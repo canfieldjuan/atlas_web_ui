@@ -47,14 +47,21 @@ async def run_reflection() -> dict[str, Any]:
     )
 
     try:
+        import asyncio
         from .graph import _llm_generate, _parse_llm_json
-        text = await _llm_generate(
-            llm, prompt, REFLECTION_SYSTEM,
-            max_tokens=settings.reasoning.max_tokens,
-            temperature=settings.reasoning.temperature,
+        text = await asyncio.wait_for(
+            _llm_generate(
+                llm, prompt, REFLECTION_SYSTEM,
+                max_tokens=settings.reasoning.max_tokens,
+                temperature=settings.reasoning.temperature,
+            ),
+            timeout=120.0,
         )
         analyzed = _parse_llm_json(text)
         llm_findings = analyzed.get("findings", [])
+    except asyncio.TimeoutError:
+        logger.warning("Reflection LLM timed out, using rule-based findings only")
+        llm_findings = []
     except Exception:
         logger.warning("Reflection LLM analysis failed", exc_info=True)
         llm_findings = []

@@ -81,7 +81,7 @@ class EntityLockManager:
             entity_id,
             holder,
         )
-        released = tag and tag.endswith("1")
+        released = tag == "UPDATE 1"
         if released:
             logger.info("Lock released: %s/%s by %s", entity_type, entity_id, holder)
         return released
@@ -155,7 +155,7 @@ class EntityLockManager:
             entity_id,
             holder,
         )
-        return tag is not None and tag.endswith("1")
+        return tag == "UPDATE 1"
 
     async def expire_stale(self, timeout_seconds: int) -> int:
         """Release locks whose heartbeat is older than *timeout_seconds*."""

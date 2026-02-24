@@ -102,6 +102,7 @@ class DatabasePool:
             database=db_settings.database,
             user=db_settings.user,
             password=db_settings.password,
+            timeout=db_settings.connect_timeout,
         )
 
     async def release(self, connection: asyncpg.Connection) -> None:

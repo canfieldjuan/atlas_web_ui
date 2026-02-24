@@ -136,9 +136,9 @@ class EventBus:
 
         event = AtlasEvent.from_row(dict(row))
 
-        for prefix, callbacks in self._subscribers.items():
+        for prefix, callbacks in list(self._subscribers.items()):
             if prefix == "*" or event.event_type.startswith(prefix):
-                for cb in callbacks:
+                for cb in list(callbacks):
                     try:
                         await cb(event)
                     except Exception:
