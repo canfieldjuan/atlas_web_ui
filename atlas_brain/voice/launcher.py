@@ -7,6 +7,7 @@ Integrates the voice pipeline with AtlasAgent.
 import asyncio
 import concurrent.futures
 import logging
+import re
 import signal
 import sys
 import threading
@@ -237,6 +238,16 @@ def _create_streaming_agent_runner():
                 if settings.intent_router.enabled:
                     route_result = await route_query(transcript)
                     _last_route_result["result"] = route_result
+
+            # Conversation mode: use agent path for full tool access.
+            # Streaming has no tools — the LLM can't search emails, check
+            # calendars, or execute any MCP tools in streaming mode.
+            if (use_streaming
+                    and settings.voice.conversation_agent_enabled
+                    and _voice_pipeline is not None
+                    and _voice_pipeline.frame_processor.state == "conversing"):
+                use_streaming = False
+                logger.info("Conversation mode: using agent path for tool access")
 
             if use_streaming:
                 _entity = getattr(route_result, "entity_name", None) if route_result else None
@@ -762,6 +773,7 @@ async def _run_agent_fallback(
     if (_voice_pipeline is not None
             and _voice_pipeline.frame_processor.state == "conversing"):
         runtime_ctx["in_conversation_mode"] = True
+        runtime_ctx["conversation_max_tokens"] = settings.voice.conversation_agent_max_tokens
     if pre_route_result is not None:
         runtime_ctx["pre_route_result"] = pre_route_result
     try:
@@ -775,7 +787,11 @@ async def _run_agent_fallback(
         )
         _signal_workflow_state(result)
         if result.response_text:
-            on_sentence(result.response_text)
+            sentences = re.split(r'(?<=[.!?])\s+', result.response_text)
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if sentence:
+                    on_sentence(sentence)
     except Exception as e:
         logger.error("Agent fallback failed: %s", e)
         on_sentence(ErrorPhrase(settings.voice.error_agent_failed))

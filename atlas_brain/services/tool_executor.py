@@ -27,16 +27,28 @@ MAX_TOOL_ITERATIONS = 3
 # Exported so callers can detect this fallback and retry with plain chat.
 EMPTY_RESPONSE_FALLBACK = "Sorry, I wasn't able to process that."
 
-# Priority tools for LLM tool calling (reduces model confusion)
+# Priority tools for LLM tool calling (reduces model confusion).
+# Read/query tools are included for natural conversation use;
+# write/action tools that belong in workflows are excluded.
 PRIORITY_TOOL_NAMES = [
+    # Built-in utilities
     "get_time", "get_weather", "get_calendar", "get_location",
     "set_reminder", "list_reminders", "send_notification",
     "send_email", "check_availability", "book_appointment",
     "cancel_appointment", "reschedule_appointment",
-    # MCP-provided tools (read-heavy set for general conversation)
+    # CRM (MCP: atlas-crm)
     "search_contacts", "get_contact", "get_customer_context",
+    "get_interactions", "get_contact_appointments",
+    # Calendar (MCP: atlas-calendar)
     "list_events", "get_event", "find_free_slots", "create_event",
+    # Email (MCP: atlas-email)
     "list_inbox", "get_message", "search_inbox", "list_folders",
+    "get_thread", "list_sent_history",
+    # Telephony (MCP: atlas-twilio) -- read-only query tools
+    "send_sms", "lookup_phone", "get_call", "list_calls",
+    # Invoicing (MCP: atlas-invoicing) -- read/query tools
+    "get_invoice", "list_invoices", "search_invoices",
+    "customer_balance", "payment_history",
 ]
 
 # Pattern to match text-based tool calls

@@ -815,6 +815,18 @@ class VoiceClientConfig(BaseSettings):
         default=256,
         description="Max tokens for streaming LLM responses (prevents truncation)"
     )
+    conversation_agent_enabled: bool = Field(
+        default=True,
+        description=(
+            "Use the full agent path (with tool access) for conversation mode "
+            "instead of streaming. Enables natural tool use mid-conversation "
+            "at the cost of ~500ms higher time-to-first-audio."
+        ),
+    )
+    conversation_agent_max_tokens: int = Field(
+        default=512,
+        description="Max tokens for agent-path responses in conversation mode",
+    )
 
     # VAD and segmentation settings
     vad_aggressiveness: int = Field(default=2, description="WebRTC VAD aggressiveness (0-3)")

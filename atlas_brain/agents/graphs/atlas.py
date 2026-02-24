@@ -1084,6 +1084,10 @@ async def _generate_llm_response(
     # Add current user message
     messages.append(Message(role="user", content=input_text))
 
+    # Conversation mode may override max_tokens for both tool-calling and
+    # plain chat paths (higher limit for multi-tool responses).
+    conv_max_tokens = state.get("runtime_context", {}).get("conversation_max_tokens")
+
     # Use tool calling for conversation turns when LLM supports it.
     # This gives the model access to MCP tools (CRM, calendar, email,
     # telephony) so it can answer queries like "search for contact Smith"
@@ -1096,7 +1100,7 @@ async def _generate_llm_response(
             ewt_result = await execute_with_tools(
                 llm=llm,
                 messages=messages,
-                max_tokens=200,
+                max_tokens=conv_max_tokens if conv_max_tokens else 200,
                 temperature=0.7,
             )
             response = ewt_result.get("response", "").strip()
@@ -1160,7 +1164,7 @@ async def _generate_llm_response(
         async with cuda_lock:
             llm_result = llm.chat(
                 messages=messages,
-                max_tokens=100,
+                max_tokens=conv_max_tokens if conv_max_tokens else 100,
                 temperature=0.7,
             )
         response = llm_result.get("response", "").strip()
