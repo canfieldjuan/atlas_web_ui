@@ -91,6 +91,12 @@ ROUTE_DEFINITIONS: dict[str, list[str]] = {
         "reply to John's last email", "respond to that email",
         "let's reply to the last email", "send a reply to Sarah",
     ],
+    "call_person": [
+        "call John", "call the customer", "give them a call",
+        "phone Sarah", "ring the client", "make a call to the plumber",
+        "call back the customer who emailed", "dial the office",
+        "I need to call someone", "can you call this person for me",
+    ],
     "calendar_write": [
         "add a meeting to my calendar for Thursday", "create a calendar event for Tuesday",
         "schedule a meeting with the team on Friday", "put a dentist appointment on my calendar",
@@ -244,6 +250,7 @@ ROUTE_TO_ACTION: dict[str, tuple[str, Optional[str]]] = {
     "reminder":       ("tool_use", "set_reminder"),
     "email":          ("tool_use", "send_email"),
     "email_query":    ("tool_use", "search_inbox"),
+    "call_person":    ("tool_use", "make_call"),
     "calendar_write": ("tool_use", "create_calendar_event"),
     "booking":            ("tool_use", "book_appointment"),
     "cancel_booking":     ("tool_use", "cancel_appointment"),
@@ -277,6 +284,7 @@ ROUTE_TO_WORKFLOW: dict[str, str] = {
     "reschedule_booking": "booking",
     "security": "security",
     "presence": "presence",
+    "call_person": "call",
 }
 
 # Valid route names for LLM fallback validation
@@ -684,6 +692,7 @@ class SemanticIntentRouter:
                 "- reminder: set a reminder or alarm\n"
                 "- email: send an email\n"
                 "- email_query: check inbox, read emails, ask about email content or tone, reply to received email\n"
+                "- call_person: call or phone a person\n"
                 "- calendar_write: create a calendar event\n"
                 "- booking/cancel_booking/reschedule_booking: manage appointments\n"
                 "- get_time: ask for current time\n"

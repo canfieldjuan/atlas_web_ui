@@ -26,6 +26,7 @@ from .booking import run_booking_workflow, BOOKING_WORKFLOW_TYPE
 from .reminder import run_reminder_workflow, REMINDER_WORKFLOW_TYPE
 from .email import run_email_workflow, EMAIL_WORKFLOW_TYPE
 from .email_query import run_email_query_workflow, EMAIL_QUERY_WORKFLOW_TYPE
+from .call import run_call_workflow, CALL_WORKFLOW_TYPE
 from .calendar import run_calendar_workflow, CALENDAR_WORKFLOW_TYPE
 from .security import run_security_workflow, SECURITY_WORKFLOW_TYPE
 from .presence import run_presence_workflow, PRESENCE_WORKFLOW_TYPE
@@ -68,6 +69,7 @@ _WORKFLOW_NAMES: dict[str, str] = {
     "booking": "appointment",
     "email": "email draft",
     "email_query": "email query",
+    "call": "phone call",
     "security": "security alert",
     "presence": "presence tracking",
 }
@@ -725,6 +727,13 @@ async def continue_workflow(state: AtlasAgentState) -> AtlasAgentState:
             speaker_id=state.get("speaker_id"),
             llm=get_llm("email_query"),
         )
+    elif workflow_type == CALL_WORKFLOW_TYPE:
+        result = await run_call_workflow(
+            input_text=input_text,
+            session_id=session_id,
+            speaker_id=state.get("speaker_id"),
+            llm=get_llm("call"),
+        )
     elif workflow_type == CALENDAR_WORKFLOW_TYPE:
         result = await run_calendar_workflow(
             input_text=input_text,
@@ -816,6 +825,13 @@ async def start_workflow(state: AtlasAgentState) -> AtlasAgentState:
             session_id=session_id,
             speaker_id=state.get("speaker_id"),
             llm=get_llm("email_query"),
+        )
+    elif workflow_type == CALL_WORKFLOW_TYPE:
+        result = await run_call_workflow(
+            input_text=input_text,
+            session_id=session_id,
+            speaker_id=state.get("speaker_id"),
+            llm=get_llm("call"),
         )
     elif workflow_type == CALENDAR_WORKFLOW_TYPE:
         result = await run_calendar_workflow(
