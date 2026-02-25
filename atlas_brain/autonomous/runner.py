@@ -274,7 +274,7 @@ class HeadlessRunner:
             # Auto-activate Ollama backend for headless synthesis
             try:
                 from ..config import settings as _settings
-                llm_registry.activate("ollama", model=_settings.llm.ollama_model, base_url=_settings.llm.ollama_url)
+                llm_registry.activate("ollama", model=_settings.llm.ollama_model, base_url=_settings.llm.ollama_url, timeout=_settings.llm.ollama_timeout)
                 llm = llm_registry.get_active()
                 logger.info("Auto-activated Ollama LLM for synthesis")
             except Exception as e:

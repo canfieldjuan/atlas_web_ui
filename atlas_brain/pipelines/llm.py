@@ -79,6 +79,7 @@ def get_pipeline_llm(
                 "ollama",
                 model=settings.llm.ollama_model,
                 base_url=settings.llm.ollama_url,
+                timeout=settings.llm.ollama_timeout,
             )
             llm = llm_registry.get_active()
             if llm is not None:
