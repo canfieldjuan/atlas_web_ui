@@ -31,6 +31,7 @@ from .reasoning import router as reasoning_router
 from .security import router as security_router
 from .system import router as system_router
 from .b2b_reviews import router as b2b_reviews_router
+from .b2b_scrape import router as b2b_scrape_router
 
 # Main router that aggregates all sub-routers
 router = APIRouter()
@@ -62,3 +63,4 @@ router.include_router(reasoning_router)
 router.include_router(security_router)
 router.include_router(system_router)
 router.include_router(b2b_reviews_router)
+router.include_router(b2b_scrape_router)

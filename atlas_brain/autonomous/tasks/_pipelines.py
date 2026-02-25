@@ -235,3 +235,32 @@ register_pipeline(PipelineConfig(
         ),
     ],
 ))
+
+# ------------------------------------------------------------------
+# B2B review scraping pipeline
+# ------------------------------------------------------------------
+
+register_pipeline(PipelineConfig(
+    name="b2b_scrape",
+    enabled_key="b2b_scrape.enabled",
+    tasks=[
+        TaskDef(
+            name="b2b_scrape_intake",
+            module="b2b_scrape_intake",
+            schedule_type="interval",
+            interval_seconds=None,
+            timeout_seconds=600,
+            description="Scrape B2B review sites per configured targets",
+            metadata={"builtin_handler": "b2b_scrape_intake"},
+            interval_config_key="b2b_scrape.intake_interval_seconds",
+        ),
+    ],
+    cleanup_rules=[
+        CleanupRule(
+            table="b2b_scrape_log",
+            where_clause="DELETE FROM b2b_scrape_log WHERE started_at < CURRENT_TIMESTAMP - make_interval(days => $1)",
+            retention_config_key="b2b_scrape.scrape_log_retention_days",
+            result_key="b2b_scrape_log_cleaned",
+        ),
+    ],
+))

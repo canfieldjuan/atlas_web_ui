@@ -1996,6 +1996,46 @@ class B2BChurnConfig(BaseSettings):
     enterprise_only: bool = Field(default=False, description="Only include enterprise-segment reviews")
 
 
+class B2BScrapeConfig(BaseSettings):
+    """B2B review scraping pipeline configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ATLAS_B2B_SCRAPE_", env_file=".env", extra="ignore"
+    )
+
+    enabled: bool = Field(default=False, description="Enable B2B review scraping pipeline")
+
+    # Schedule
+    intake_interval_seconds: int = Field(default=3600, description="Scrape polling interval (1 hour)")
+    max_targets_per_run: int = Field(default=5, description="Max targets to scrape per run")
+
+    # Proxies (comma-separated URLs)
+    proxy_datacenter_urls: str = Field(default="", description="Datacenter proxy URLs (comma-separated)")
+    proxy_residential_urls: str = Field(default="", description="Residential proxy URLs (comma-separated)")
+    proxy_residential_geo: str = Field(default="US", description="Residential proxy geo code")
+
+    # Per-domain rate limits (RPM)
+    g2_rpm: int = Field(default=6, description="G2 requests per minute")
+    capterra_rpm: int = Field(default=8, description="Capterra requests per minute")
+    trustradius_rpm: int = Field(default=10, description="TrustRadius requests per minute")
+    reddit_rpm: int = Field(default=30, description="Reddit requests per minute")
+
+    # Behavioral delays
+    min_delay_seconds: float = Field(default=2.0, description="Min delay between requests")
+    max_delay_seconds: float = Field(default=8.0, description="Max delay between requests")
+
+    # Reddit
+    reddit_default_subreddits: str = Field(
+        default="sysadmin,salesforce,aws,ITManagers,devops,msp",
+        description="Default subreddits for Reddit scraping (comma-separated)",
+    )
+
+    # Resilience
+    max_retries: int = Field(default=2, description="Max retries per request")
+    blocked_cooldown_hours: int = Field(default=24, description="Hours to cool down after blocked")
+    scrape_log_retention_days: int = Field(default=30, description="Days to retain scrape logs")
+
+
 class TemporalPatternConfig(BaseSettings):
     """Temporal pattern context configuration."""
 
@@ -2137,6 +2177,7 @@ class Settings(BaseSettings):
     invoicing: InvoicingConfig = Field(default_factory=InvoicingConfig)
     external_data: ExternalDataConfig = Field(default_factory=ExternalDataConfig)
     b2b_churn: B2BChurnConfig = Field(default_factory=B2BChurnConfig)
+    b2b_scrape: B2BScrapeConfig = Field(default_factory=B2BScrapeConfig)
     openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
     ftl_tracing: FTLTracingConfig = Field(default_factory=FTLTracingConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
