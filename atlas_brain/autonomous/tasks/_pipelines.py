@@ -119,6 +119,16 @@ register_pipeline(PipelineConfig(
             interval_config_key="external_data.complaint_enrichment_interval_seconds",
         ),
         TaskDef(
+            name="deep_enrichment",
+            module="deep_enrichment",
+            schedule_type="interval",
+            interval_seconds=None,
+            timeout_seconds=300,
+            description="Second-pass deep extraction of 10+ rich fields per review for content generation",
+            metadata={"builtin_handler": "deep_enrichment"},
+            interval_config_key="external_data.deep_enrichment_interval_seconds",
+        ),
+        TaskDef(
             name="complaint_analysis",
             module="complaint_analysis",
             schedule_type="cron",
@@ -146,6 +156,20 @@ register_pipeline(PipelineConfig(
             },
             cron_config_key="external_data.complaint_content_cron",
         ),
+        TaskDef(
+            name="competitive_intelligence",
+            module="competitive_intelligence",
+            schedule_type="cron",
+            cron_expression="30 21 * * *",
+            timeout_seconds=300,
+            description="Cross-brand competitive intelligence from deep-extracted product reviews",
+            metadata={
+                "builtin_handler": "competitive_intelligence",
+                "notify_priority": "default",
+                "notify_tags": "brain,bar_chart",
+            },
+            cron_config_key="external_data.competitive_intelligence_cron",
+        ),
     ],
     cleanup_rules=[
         CleanupRule(
@@ -165,6 +189,49 @@ register_pipeline(PipelineConfig(
             where_clause="DELETE FROM complaint_content WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)",
             retention_config_key="external_data.complaint_retention_days",
             result_key="complaint_content_cleaned",
+        ),
+    ],
+))
+
+# ------------------------------------------------------------------
+# B2B churn prediction pipeline
+# ------------------------------------------------------------------
+
+register_pipeline(PipelineConfig(
+    name="b2b_churn",
+    enabled_key="b2b_churn.enabled",
+    tasks=[
+        TaskDef(
+            name="b2b_enrichment",
+            module="b2b_enrichment",
+            schedule_type="interval",
+            interval_seconds=None,
+            timeout_seconds=180,
+            description="Enrich B2B reviews with churn signals via LLM",
+            metadata={"builtin_handler": "b2b_enrichment"},
+            interval_config_key="b2b_churn.enrichment_interval_seconds",
+        ),
+        TaskDef(
+            name="b2b_churn_intelligence",
+            module="b2b_churn_intelligence",
+            schedule_type="cron",
+            cron_expression="0 21 * * 0",
+            timeout_seconds=600,
+            description="Weekly churn intelligence aggregation and feed generation",
+            metadata={
+                "builtin_handler": "b2b_churn_intelligence",
+                "notify_priority": "high",
+                "notify_tags": "brain,chart_with_downwards_trend",
+            },
+            cron_config_key="b2b_churn.intelligence_cron",
+        ),
+    ],
+    cleanup_rules=[
+        CleanupRule(
+            table="b2b_intelligence",
+            where_clause="DELETE FROM b2b_intelligence WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)",
+            retention_config_key="b2b_churn.intelligence_window_days",
+            result_key="b2b_intelligence_cleaned",
         ),
     ],
 ))

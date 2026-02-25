@@ -1961,6 +1961,39 @@ class ExternalDataConfig(BaseSettings):
     deep_enrichment_max_per_batch: int = Field(default=5, description="Max reviews to deep-enrich per autonomous batch")
     deep_enrichment_max_attempts: int = Field(default=3, description="Max attempts before marking deep_failed")
     deep_enrichment_max_tokens: int = Field(default=1024, description="Max LLM output tokens for deep extraction")
+    # Competitive intelligence (cross-brand analysis from deep_extraction)
+    competitive_intelligence_enabled: bool = Field(default=True, description="Enable competitive intelligence analysis")
+    competitive_intelligence_cron: str = Field(default="30 21 * * *", description="Cron for competitive intelligence (default 9:30 PM)")
+    competitive_intelligence_max_tokens: int = Field(default=16384, description="Max tokens for competitive intelligence LLM call")
+    competitive_intelligence_min_deep_enriched: int = Field(default=100, description="Min deep-enriched reviews required to run")
+
+
+class B2BChurnConfig(BaseSettings):
+    """B2B software churn prediction pipeline configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ATLAS_B2B_CHURN_", env_file=".env", extra="ignore"
+    )
+
+    enabled: bool = Field(default=False, description="Enable B2B churn prediction pipeline")
+
+    # Enrichment
+    enrichment_interval_seconds: int = Field(default=300, description="Enrichment polling interval")
+    enrichment_max_per_batch: int = Field(default=10, description="Max reviews to enrich per batch")
+    enrichment_max_attempts: int = Field(default=3, description="Max enrichment attempts")
+    enrichment_max_tokens: int = Field(default=1024, description="Max LLM output tokens")
+    enrichment_local_only: bool = Field(default=False, description="Force local LLM only")
+
+    # Intelligence aggregation
+    intelligence_enabled: bool = Field(default=True, description="Enable churn intelligence aggregation")
+    intelligence_cron: str = Field(default="0 21 * * 0", description="Weekly churn intelligence (Sunday 9 PM)")
+    intelligence_max_tokens: int = Field(default=16384, description="Max tokens for intelligence LLM call")
+    intelligence_window_days: int = Field(default=30, description="Days of enriched reviews to analyze")
+    intelligence_min_reviews: int = Field(default=3, description="Min reviews per vendor to include")
+
+    # Churn thresholds
+    high_churn_urgency_threshold: int = Field(default=7, description="Urgency score >= this = high churn risk")
+    enterprise_only: bool = Field(default=False, description="Only include enterprise-segment reviews")
 
 
 class TemporalPatternConfig(BaseSettings):
@@ -2103,6 +2136,7 @@ class Settings(BaseSettings):
     sms_intelligence: SMSIntelligenceConfig = Field(default_factory=SMSIntelligenceConfig)
     invoicing: InvoicingConfig = Field(default_factory=InvoicingConfig)
     external_data: ExternalDataConfig = Field(default_factory=ExternalDataConfig)
+    b2b_churn: B2BChurnConfig = Field(default_factory=B2BChurnConfig)
     openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
     ftl_tracing: FTLTracingConfig = Field(default_factory=FTLTracingConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)

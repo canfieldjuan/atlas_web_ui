@@ -188,6 +188,65 @@ def _format_parsed(parsed: dict[str, Any], fallback: str) -> str:
         if items:
             parts.append("\n**Connections**\n" + "\n".join(items))
 
+    # -- Competitive intelligence fields --
+
+    brand_scorecards = parsed.get("brand_scorecards", [])
+    if brand_scorecards and isinstance(brand_scorecards, list):
+        items = []
+        for sc in brand_scorecards[:5]:
+            if isinstance(sc, dict):
+                brand = sc.get("brand", "")
+                if not brand:
+                    continue
+                health = sc.get("health_score", "")
+                status = sc.get("status", "")
+                liner = sc.get("one_liner", "")
+                line = f"- **{brand}** {health}/100"
+                if status:
+                    line += f" ({status})"
+                if liner:
+                    line += f": {liner}"
+                items.append(line)
+        if items:
+            parts.append("\n**Brand Scorecards**\n" + "\n".join(items))
+
+    comp_flows = parsed.get("competitive_flows", [])
+    if comp_flows and isinstance(comp_flows, list):
+        items = []
+        for flow in comp_flows[:5]:
+            if isinstance(flow, dict):
+                frm = flow.get("source_brand", "")
+                to = flow.get("competitor", "")
+                if not frm and not to:
+                    continue
+                reason = flow.get("primary_reason", "")
+                vol = flow.get("mentions", "")
+                line = f"- {frm} -> {to}"
+                if vol:
+                    line += f" ({vol} mentions)"
+                if reason:
+                    line += f": {reason}"
+                items.append(line)
+        if items:
+            parts.append("\n**Competitive Flows**\n" + "\n".join(items))
+
+    # insights (competitive intelligence uses "insights", not "key_insights")
+    ci_insights = parsed.get("insights", [])
+    if ci_insights and isinstance(ci_insights, list) and not parsed.get("key_insights"):
+        items = []
+        for ins in ci_insights[:5]:
+            if isinstance(ins, dict):
+                text = ins.get("insight", "")
+                impact = ins.get("impact", "")
+                line = f"- {text}"
+                if impact:
+                    line += f" [{impact}]"
+                items.append(line)
+            elif isinstance(ins, str):
+                items.append(f"- {ins}")
+        if items:
+            parts.append("\n**Insights**\n" + "\n".join(items))
+
     # -- Common: recommendations --
 
     recs = parsed.get("recommendations", [])
