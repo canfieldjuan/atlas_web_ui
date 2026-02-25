@@ -35,6 +35,14 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
     max_prior = cfg.intelligence_max_prior_sessions
     today = date.today()
 
+    # Skip if we already have a journal entry for today
+    existing = await pool.fetchrow(
+        "SELECT id FROM reasoning_journal WHERE session_date = $1 LIMIT 1",
+        today,
+    )
+    if existing:
+        return {"_skip_synthesis": f"Intelligence journal already exists for {today}"}
+
     # Gather all 6 data sources in parallel
     (
         market_data, news_articles, business_ctx,

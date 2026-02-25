@@ -33,6 +33,14 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
     window_days = cfg.complaint_analysis_window_days
     today = date.today()
 
+    # Skip if we already have a report for today
+    existing = await pool.fetchrow(
+        "SELECT id FROM complaint_reports WHERE report_date = $1 LIMIT 1",
+        today,
+    )
+    if existing:
+        return {"_skip_synthesis": f"Report already exists for {today}"}
+
     # Gather data sources in parallel
     category_stats, product_stats, prior_reports = await asyncio.gather(
         _fetch_category_stats(pool, window_days),
