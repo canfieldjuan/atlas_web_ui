@@ -86,7 +86,8 @@ class AntiDetectionClient:
         # override the header on the retry so cookies match the solved UA.
         override_ua: str | None = None
 
-        for attempt in range(max_retries + 1):
+        attempt = 0
+        while attempt <= max_retries:
             try:
                 # 1. Rate limit
                 await self._rate_limiter.acquire(domain)
@@ -151,7 +152,7 @@ class AntiDetectionClient:
                                     user_agent=profile.user_agent,
                                     proxy_url=proxy.url if proxy else None,
                                 )
-                                # Store solved cookies and pin profile/proxy
+                                # Store solved cookies and pin profile
                                 self._get_domain_cookies(domain).update(solution.cookies)
                                 pinned_profile = profile
                                 if solution.user_agent:
@@ -161,6 +162,9 @@ class AntiDetectionClient:
                                     domain, solution.solve_time_ms,
                                     bool(solution.user_agent),
                                 )
+                                # Successful solve always gets one more attempt.
+                                # Don't increment attempt — the solve itself isn't a retry.
+                                last_exc = None
                                 continue
                             except Exception as solve_exc:
                                 logger.warning(
@@ -179,11 +183,13 @@ class AntiDetectionClient:
                     if attempt < max_retries:
                         # Clear sticky session on block so next attempt uses different proxy
                         self._proxy.clear_sticky(domain)
+                        attempt += 1
                         continue
                 elif resp.status_code == 429:
                     logger.warning("Rate limited (429) on %s, backing off", domain)
                     await asyncio.sleep(30 + random.uniform(5, 15))
                     if attempt < max_retries:
+                        attempt += 1
                         continue
 
                 return resp
@@ -197,6 +203,8 @@ class AntiDetectionClient:
                 if attempt < max_retries:
                     self._proxy.clear_sticky(domain)
                     await asyncio.sleep(random.uniform(2, 5))
+
+            attempt += 1
 
         raise last_exc or RuntimeError(f"All retries exhausted for {url}")
 
