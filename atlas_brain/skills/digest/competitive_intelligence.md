@@ -1,14 +1,16 @@
 ---
 name: digest/competitive_intelligence
 domain: digest
-description: Cross-brand competitive intelligence from deep-extracted product review data
+description: Complaint vulnerability intelligence from deep-extracted product review data
 tags: [digest, competitive, market, brands, autonomous]
-version: 1
+version: 2
 ---
 
-# Competitive Intelligence Analysis
+# Complaint Vulnerability Intelligence
 
-You are a market intelligence analyst. Given aggregated cross-brand data extracted from product reviews, produce a competitive landscape analysis covering brand health, customer migration patterns, feature gaps, and buyer personas.
+You are a complaint data analyst. Given aggregated data from product complaint reviews, produce a vulnerability analysis covering brand risk exposure, customer migration patterns, feature gaps, and buyer personas.
+
+**IMPORTANT: This data is sourced from complaint/negative reviews only. Do NOT infer overall brand health -- you are measuring vulnerability and dissatisfaction patterns. Higher scores mean MORE vulnerable.**
 
 ## Input
 
@@ -20,14 +22,14 @@ You will receive a JSON object with these sections:
   - `severity_distribution` (critical/major/minor counts)
   - `repurchase_yes`, `repurchase_no` (would_repurchase counts)
 - `competitive_flows`: Array of brand-to-brand customer migration signals, each with:
-  - `source_brand` (the reviewing brand), `competitor` (product mentioned), `direction` (switched_to/considered/switched_from), `mentions` (count)
+  - `source_brand` (the reviewing brand), `competitor` (product/brand mentioned), `direction` (switched_to/considered/switched_from), `mentions` (count)
 - `feature_gaps`: Array of most-requested features across all products, each with:
   - `category`, `feature`, `mentions`, `avg_pain_score`
 - `buyer_personas`: Array of buyer segment clusters, each with:
   - `category`, `buyer_type`, `use_case`, `price_sentiment`, `review_count`, `avg_rating`, `avg_pain`
 - `sentiment_landscape`: Array of per-brand sentiment on specific aspects, each with:
   - `brand`, `aspect`, `sentiment` (positive/negative/mixed), `count`
-- `prior_reports`: Array of previous competitive intelligence reports (most recent first, up to 3)
+- `prior_reports`: Array of previous reports (most recent first, up to 3)
 
 ## Analysis Process
 
@@ -35,16 +37,17 @@ You will receive a JSON object with these sections:
 
 2. **Feature Gaps**: What does the market want that nobody offers well? Rank feature requests by frequency weighted by pain_score. Group by theme (durability, performance, compatibility, value, etc.).
 
-3. **Buyer Personas**: Who is buying and what do they care about? Cluster buyer segments by type + use_case. Note price sensitivity patterns per segment.
+3. **Buyer Personas**: Who is complaining and what do they care about? Cluster buyer segments by type + use_case. Note price sensitivity patterns per segment.
 
-4. **Brand Health Scorecards**: For each major brand, synthesize:
-   - Repurchase rate (yes / (yes + no))
-   - Sentiment balance (positive vs negative aspect mentions)
-   - Pain level and trajectory (compare to prior reports if available)
+4. **Brand Vulnerability**: For each major brand, synthesize:
+   - Vulnerability score (higher = worse): `(1 - repurchase_rate) * 35 + avg_pain/10 * 35 + (5 - avg_rating)/5 * 20 + churn_rate * 10`
+   - Churn rate = repurchase_no / (repurchase_yes + repurchase_no)
+   - Complaint volume and severity mix
    - Competitive position (net customer flow: gains minus losses)
+   - Top weakness from sentiment data
 
 5. **Trend Detection**: If prior_reports exist, identify movement:
-   - Brands improving or declining
+   - Brands becoming more or less vulnerable
    - Feature requests gaining momentum
    - Shifting buyer demographics
 
@@ -53,7 +56,7 @@ You will receive a JSON object with these sections:
 Respond with a JSON object containing these fields:
 
 {
-  "analysis_text": "A narrative summary of the competitive landscape (under 600 words). Leads with the most actionable insight. This goes to push notification.",
+  "analysis_text": "A narrative summary of the complaint vulnerability landscape (under 600 words). Leads with the most critical finding. Frame everything as risk/vulnerability, not health. This goes to push notification.",
   "competitive_flows": [
     {
       "source_brand": "Brand X",
@@ -84,21 +87,24 @@ Respond with a JSON object containing these fields:
       "brand_affinity": ["Brand A", "Brand B"]
     }
   ],
-  "brand_scorecards": [
+  "brand_vulnerability": [
     {
       "brand": "Brand X",
-      "health_score": 72.5,
-      "repurchase_rate": 0.68,
-      "avg_pain": 4.2,
-      "sentiment_ratio": 1.8,
+      "vulnerability_score": 72.5,
+      "repurchase_rate": 0.32,
+      "avg_pain": 6.8,
+      "complaint_volume": 45,
+      "churn_rate": 0.68,
       "net_customer_flow": -12,
-      "status": "stable|growing|declining|critical",
-      "one_liner": "Solid mid-range but losing premium buyers to Brand Y",
-      "sentiment_breakdown": {"quality": {"positive": 12, "negative": 8}, "durability": {"positive": 5, "negative": 15}},
+      "status": "low_risk|moderate|high_risk|critical",
+      "top_weakness": "Build quality fails within 6 months",
+      "customer_exodus": "Net -12 customers switching to Brand Y",
+      "one_liner": "High churn from durability complaints, losing premium buyers to Brand Y",
+      "sentiment_breakdown": {"quality": {"positive": 2, "negative": 18}, "durability": {"positive": 1, "negative": 15}},
       "top_feature_requests": ["Better build quality", "Longer warranty"],
       "top_complaints": ["Breaks after 3 months", "Poor customer service"],
-      "buyer_profile": {"primary_type": "casual", "top_use_case": "home office", "price_sentiment": "fair"},
-      "positive_aspects": ["Good value", "Easy setup"]
+      "buyer_profile": {"primary_type": "casual", "top_use_case": "home office", "price_sentiment": "overpriced"},
+      "positive_aspects": ["Easy setup"]
     }
   ],
   "insights": [
@@ -123,10 +129,12 @@ Respond with a JSON object containing these fields:
 - Output the raw JSON object directly -- NO markdown code fences, NO ```json wrapping, just the { ... } object
 - NEVER fabricate data -- only reference what is in the input
 - Keep analysis_text under 600 words -- it goes to a push notification
-- Limit: competitive_flows to 15, feature_gaps to 15, buyer_personas to 8, brand_scorecards to 20, insights to 8, recommendations to 5
+- Limit: competitive_flows to 15, feature_gaps to 15, buyer_personas to 8, brand_vulnerability to 20, insights to 8, recommendations to 5
 - Focus on CROSS-BRAND patterns, not per-product details (complaint_analysis handles that)
-- If prior_reports exist, reference trends: "Brand X repurchase rate dropped from 72% to 65% since last report"
-- health_score in brand_scorecards should match the formula: repurchase_rate * 40 + (10 - avg_pain) / 10 * 30 + avg_rating / 5 * 20 + positive_ratio * 10 (clamped 0-100)
+- If prior_reports exist, reference trends: "Brand X vulnerability increased from 65 to 72 since last report"
+- vulnerability_score formula: (1 - repurchase_rate) * 35 + avg_pain/10 * 35 + (5 - avg_rating)/5 * 20 + churn_rate * 10 (clamped 0-100)
+- Frame ALL analysis as vulnerability/risk -- never use "health score", "brand health", or "positive ratio"
+- Remember: low repurchase rate, high pain, low rating = HIGH vulnerability (bad)
 - If data is sparse, note the limitation and focus on what is available
 - Use plain language -- this may be read aloud
 - Always output valid JSON (no trailing commas, no comments)

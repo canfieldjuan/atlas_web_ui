@@ -190,25 +190,25 @@ def _format_parsed(parsed: dict[str, Any], fallback: str) -> str:
 
     # -- Competitive intelligence fields --
 
-    brand_scorecards = parsed.get("brand_scorecards", [])
-    if brand_scorecards and isinstance(brand_scorecards, list):
+    brand_vuln = parsed.get("brand_vulnerability", []) or parsed.get("brand_scorecards", [])
+    if brand_vuln and isinstance(brand_vuln, list):
         items = []
-        for sc in brand_scorecards[:5]:
+        for sc in brand_vuln[:5]:
             if isinstance(sc, dict):
                 brand = sc.get("brand", "")
                 if not brand:
                     continue
-                health = sc.get("health_score", "")
+                score = sc.get("vulnerability_score", sc.get("health_score", ""))
                 status = sc.get("status", "")
                 liner = sc.get("one_liner", "")
-                line = f"- **{brand}** {health}/100"
+                line = f"- **{brand}** {score}/100 vulnerability"
                 if status:
                     line += f" ({status})"
                 if liner:
                     line += f": {liner}"
                 items.append(line)
         if items:
-            parts.append("\n**Brand Scorecards**\n" + "\n".join(items))
+            parts.append("\n**Brand Vulnerability**\n" + "\n".join(items))
 
     comp_flows = parsed.get("competitive_flows", [])
     if comp_flows and isinstance(comp_flows, list):

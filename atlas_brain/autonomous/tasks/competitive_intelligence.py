@@ -1,10 +1,10 @@
 """
-Competitive intelligence: cross-brand market analysis from deep-extracted reviews.
+Complaint vulnerability intelligence: cross-brand analysis from deep-extracted reviews.
 
 Aggregates deep_extraction JSONB fields across brands to produce competitive
-flow maps, feature gap rankings, buyer persona clusters, and brand health
-scorecards. Source-agnostic -- works with any data in product_reviews that
-has deep_extraction populated.
+flow maps, feature gap rankings, buyer persona clusters, and brand vulnerability
+scores. Source data is complaint/negative reviews only -- scores measure
+vulnerability and dissatisfaction, not overall brand health.
 
 Runs daily (default 9:30 PM, after complaint_analysis at 9 PM). Handles its
 own LLM call, report persistence, brand_intelligence upserts, and ntfy
@@ -14,6 +14,7 @@ notification -- returns _skip_synthesis so the runner does not double-synthesize
 import asyncio
 import json
 import logging
+import re
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -102,6 +103,14 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
     if not fetchers["brand_health"]:
         return {"_skip_synthesis": "No brand data to analyze"}
 
+    # Post-process: normalize competitor names and feature requests
+    if fetchers["competitive_flows"]:
+        fetchers["competitive_flows"] = await _normalize_competitors(
+            fetchers["competitive_flows"], pool
+        )
+    if fetchers["feature_gaps"]:
+        fetchers["feature_gaps"] = _normalize_feature_requests(fetchers["feature_gaps"])
+
     # Build payload
     payload = {"date": str(today), **fetchers}
 
@@ -136,7 +145,7 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
             json.dumps(parsed.get("competitive_flows", [])),
             json.dumps(parsed.get("feature_gaps", [])),
             json.dumps(parsed.get("buyer_personas", [])),
-            json.dumps(parsed.get("brand_scorecards", [])),
+            json.dumps(parsed.get("brand_vulnerability", parsed.get("brand_scorecards", []))),
             json.dumps(parsed.get("insights", [])),
             json.dumps(parsed.get("recommendations", [])),
         )
@@ -155,7 +164,7 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
     await send_pipeline_notification(
         parsed.get("analysis_text", analysis),
         task,
-        title="Atlas: Competitive Intelligence",
+        title="Atlas: Complaint Vulnerability Intelligence",
         default_tags="brain,bar_chart",
         parsed=parsed,
     )
@@ -258,15 +267,20 @@ async def _fetch_feature_gaps(pool) -> list[dict[str, Any]]:
     rows = await pool.fetch(
         """
         SELECT
-            pr.source_category AS category,
+            COALESCE(
+                REPLACE(pm.categories->>2, '&amp;', '&'),
+                REPLACE(pm.categories->>1, '&amp;', '&'),
+                pr.source_category
+            ) AS category,
             feat AS feature,
             count(*) AS mentions,
             avg(pr.pain_score) AS avg_pain_score
         FROM product_reviews pr
+        LEFT JOIN product_metadata pm ON pm.asin = pr.asin
         CROSS JOIN jsonb_array_elements_text(pr.deep_extraction->'feature_requests') AS feat
         WHERE pr.deep_enrichment_status = 'enriched'
           AND jsonb_array_length(pr.deep_extraction->'feature_requests') > 0
-        GROUP BY pr.source_category, feat
+        GROUP BY category, feat
         HAVING count(*) >= 2
         ORDER BY count(*) DESC
         LIMIT 100
@@ -288,7 +302,11 @@ async def _fetch_buyer_personas(pool) -> list[dict[str, Any]]:
     rows = await pool.fetch(
         """
         SELECT
-            pr.source_category AS category,
+            COALESCE(
+                REPLACE(pm.categories->>2, '&amp;', '&'),
+                REPLACE(pm.categories->>1, '&amp;', '&'),
+                pr.source_category
+            ) AS category,
             pr.deep_extraction->'buyer_context'->>'buyer_type' AS buyer_type,
             pr.deep_extraction->'buyer_context'->>'use_case' AS use_case,
             pr.deep_extraction->'buyer_context'->>'price_sentiment' AS price_sentiment,
@@ -296,10 +314,11 @@ async def _fetch_buyer_personas(pool) -> list[dict[str, Any]]:
             avg(pr.rating) AS avg_rating,
             avg(pr.pain_score) AS avg_pain
         FROM product_reviews pr
+        LEFT JOIN product_metadata pm ON pm.asin = pr.asin
         WHERE pr.deep_enrichment_status = 'enriched'
           AND pr.deep_extraction->'buyer_context' IS NOT NULL
         GROUP BY
-            pr.source_category,
+            category,
             pr.deep_extraction->'buyer_context'->>'buyer_type',
             pr.deep_extraction->'buyer_context'->>'use_case',
             pr.deep_extraction->'buyer_context'->>'price_sentiment'
@@ -389,30 +408,129 @@ async def _fetch_prior_reports(pool, limit: int = 3) -> list[dict[str, Any]]:
 
 
 # ------------------------------------------------------------------
+# Post-processing normalization
+# ------------------------------------------------------------------
+
+_COMPETITOR_NOISE = {
+    "competitor", "brand", "other", "another", "generic", "cheap",
+    "remote", "device", "product", "unit", "model", "version",
+    "itunes", "youtube", "amazon", "forum", "ebay", "walmart",
+    "microsoft vista", "windows", "mac os", "other brand",
+    "another product", "cheap one", "other one",
+    "2 button version", "button", "cable", "adapter", "charger",
+}
+
+
+async def _normalize_competitors(flows: list[dict[str, Any]], pool) -> list[dict[str, Any]]:
+    """Clean up competitor names: noise filter, case dedup, brand-aware collapse."""
+    # Fetch known brands from product_metadata (lowercase key -> original casing)
+    brand_rows = await pool.fetch(
+        "SELECT DISTINCT brand FROM product_metadata "
+        "WHERE brand IS NOT NULL AND brand != ''"
+    )
+    known_brands = {r["brand"].lower(): r["brand"] for r in brand_rows}
+
+    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    for flow in flows:
+        raw = (flow.get("competitor") or "").strip()
+        if not raw:
+            continue
+
+        lowered = raw.lower()
+
+        # Filter noise
+        if lowered in _COMPETITOR_NOISE:
+            continue
+        if raw.isdigit():
+            continue
+
+        # Brand-aware collapse: if first word matches a known brand, normalize
+        # to just the brand name (drop model number / spec details)
+        words = raw.split()
+        first_lower = words[0].lower()
+
+        # Filter short names unless they match a known brand (e.g. "LG")
+        if len(raw) < 3 and first_lower not in known_brands:
+            continue
+        if first_lower in known_brands:
+            normalized = known_brands[first_lower]  # Preserve original DB casing
+        else:
+            # Simple case normalization
+            normalized = raw.title()
+
+        key = (flow.get("source_brand", ""), normalized, flow.get("direction", ""))
+        if key in merged:
+            merged[key]["mentions"] += flow.get("mentions", 0)
+        else:
+            merged[key] = {
+                "source_brand": flow.get("source_brand", ""),
+                "competitor": normalized,
+                "direction": flow.get("direction", ""),
+                "mentions": flow.get("mentions", 0),
+            }
+
+    result = sorted(merged.values(), key=lambda x: x["mentions"], reverse=True)
+    return result
+
+
+def _normalize_feature_requests(gaps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Lowercase dedup + merge counts for near-identical feature requests."""
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for gap in gaps:
+        feat_raw = (gap.get("feature") or "").strip()
+        if not feat_raw:
+            continue
+
+        # Normalize: lowercase, collapse whitespace
+        feat_key = re.sub(r"\s+", " ", feat_raw.lower())
+        category = gap.get("category", "")
+        key = (category, feat_key)
+
+        if key in merged:
+            merged[key]["mentions"] += gap.get("mentions", 0)
+            # Keep the higher pain score
+            existing_pain = merged[key].get("avg_pain_score", 0.0)
+            new_pain = gap.get("avg_pain_score", 0.0)
+            merged[key]["avg_pain_score"] = max(existing_pain, new_pain)
+        else:
+            merged[key] = {
+                "category": category,
+                "feature": feat_raw.strip(),  # Keep original casing for display
+                "mentions": gap.get("mentions", 0),
+                "avg_pain_score": gap.get("avg_pain_score", 0.0),
+            }
+
+    result = sorted(merged.values(), key=lambda x: x["mentions"], reverse=True)
+    return result
+
+
+# ------------------------------------------------------------------
 # Brand intelligence upserts
 # ------------------------------------------------------------------
 
 
-def _compute_health_score(brand_data: dict, parsed_scorecard: dict) -> float:
-    """Composite health score 0-100.
+def _compute_vulnerability_score(brand_data: dict) -> float:
+    """Composite vulnerability score 0-100. Higher = more vulnerable.
 
-    Formula: repurchase_rate * 40 + (10 - pain) / 10 * 30 + rating / 5 * 20 + positive_ratio * 10
+    Formula: (1 - repurchase_rate) * 35 + pain/10 * 35 + (5 - rating)/5 * 20 + churn_signal * 10
+    Where churn_signal = proportion of reviews with would_repurchase=false out of total with any signal.
     """
     yes = brand_data.get("repurchase_yes", 0)
     no = brand_data.get("repurchase_no", 0)
-    repurchase_rate = yes / (yes + no) if (yes + no) > 0 else 0.5
+    total_signal = yes + no
+    repurchase_rate = yes / total_signal if total_signal > 0 else 0.5
+    churn_signal = no / total_signal if total_signal > 0 else 0.5
 
     pain = brand_data.get("avg_pain_score", 5.0)
     rating = brand_data.get("avg_rating", 3.0)
 
-    # positive_ratio from parsed scorecard if available, else estimate from sentiment
-    positive_ratio = parsed_scorecard.get("repurchase_rate", repurchase_rate)
-
     score = (
-        repurchase_rate * 40
-        + (10 - pain) / 10 * 30
-        + rating / 5 * 20
-        + positive_ratio * 10
+        (1 - repurchase_rate) * 35
+        + pain / 10 * 35
+        + (5 - rating) / 5 * 20
+        + churn_signal * 10
     )
     return max(0.0, min(100.0, round(score, 2)))
 
@@ -426,10 +544,11 @@ async def _upsert_brand_intelligence(
     now = datetime.now(timezone.utc)
     upserted = 0
 
-    # Build lookup from LLM-generated scorecards
+    # Build lookup from LLM-generated scorecards (new key: brand_vulnerability)
+    raw_scorecards = parsed.get("brand_vulnerability", []) or parsed.get("brand_scorecards", [])
     scorecards = {
         sc["brand"]: sc
-        for sc in parsed.get("brand_scorecards", [])
+        for sc in raw_scorecards
         if isinstance(sc, dict) and sc.get("brand")
     }
 
@@ -448,7 +567,7 @@ async def _upsert_brand_intelligence(
             continue
 
         scorecard = scorecards.get(brand, {})
-        health = _compute_health_score(brand_data, scorecard)
+        health = _compute_vulnerability_score(brand_data)
 
         try:
             await pool.execute(
