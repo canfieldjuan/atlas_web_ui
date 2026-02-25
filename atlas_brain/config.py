@@ -1956,6 +1956,11 @@ class ExternalDataConfig(BaseSettings):
     complaint_content_cron: str = Field(default="0 22 * * *", description="Cron for content generation (default 10 PM)")
     complaint_content_max_per_run: int = Field(default=5, description="Max content pieces to generate per run")
     complaint_content_max_tokens: int = Field(default=4096, description="Max tokens per content generation call")
+    # Deep enrichment (second-pass extraction)
+    deep_enrichment_interval_seconds: int = Field(default=600, description="Deep enrichment polling interval (10 min)")
+    deep_enrichment_max_per_batch: int = Field(default=5, description="Max reviews to deep-enrich per autonomous batch")
+    deep_enrichment_max_attempts: int = Field(default=3, description="Max attempts before marking deep_failed")
+    deep_enrichment_max_tokens: int = Field(default=1024, description="Max LLM output tokens for deep extraction")
 
 
 class TemporalPatternConfig(BaseSettings):
@@ -1993,6 +1998,35 @@ class MCPConfig(BaseSettings):
     twilio_port: int = Field(default=8058, description="Port for Twilio MCP server (SSE transport)")
     calendar_port: int = Field(default=8059, description="Port for Calendar MCP server (SSE transport)")
     invoicing_port: int = Field(default=8060, description="Port for Invoicing MCP server (SSE transport)")
+
+
+class AlertMonitorConfig(BaseSettings):
+    """Proactive weather and traffic alert monitoring configuration."""
+
+    model_config = SettingsConfigDict(env_prefix="ATLAS_ALERT_MONITOR__", env_file=".env", extra="ignore")
+
+    enabled: bool = Field(default=False, description="Enable proactive weather/traffic alerts")
+    check_interval_seconds: int = Field(default=600, description="Poll interval (10 min default)")
+
+    # Location (defaults from weather tool config at runtime)
+    home_lat: float | None = Field(default=None, description="Home latitude (falls back to weather_default_lat)")
+    home_lon: float | None = Field(default=None, description="Home longitude (falls back to weather_default_lon)")
+    work_lat: float | None = Field(default=None, description="Work/office latitude for commute monitoring")
+    work_lon: float | None = Field(default=None, description="Work/office longitude for commute monitoring")
+
+    # Weather alert filtering
+    nws_severities: str = Field(
+        default="Extreme,Severe",
+        description="Comma-separated NWS severity levels to alert on (Extreme, Severe, Moderate, Minor)",
+    )
+
+    # Traffic thresholds
+    traffic_radius_miles: float = Field(default=15, description="Radius around home for traffic incidents")
+    commute_delay_threshold_minutes: int = Field(default=10, description="Commute delay (minutes) before alerting")
+    traffic_min_severity: int = Field(default=2, description="Min TomTom incident magnitude (0-4) for area alerts")
+
+    # TTS voice announcements for urgent alerts
+    tts_on_urgent: bool = Field(default=True, description="TTS broadcast for tornado/flash flood/severe storm alerts")
 
 
 class Settings(BaseSettings):
@@ -2072,6 +2106,7 @@ class Settings(BaseSettings):
     openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
     ftl_tracing: FTLTracingConfig = Field(default_factory=FTLTracingConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    alert_monitor: AlertMonitorConfig = Field(default_factory=AlertMonitorConfig)
 
     # Reasoning agent (cross-domain event-driven intelligence)
     @staticmethod

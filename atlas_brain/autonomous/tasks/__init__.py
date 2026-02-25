@@ -31,6 +31,7 @@ _BUILTIN_TASKS = [
     ("monthly_invoice_generation", "run", "monthly_invoice_generation"),
     ("reasoning_tick", "run", "reasoning_tick"),
     ("reasoning_reflection", "run", "reasoning_reflection"),
+    ("weather_traffic_alerts", "run", "weather_traffic_alerts"),
 ]
 
 

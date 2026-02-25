@@ -451,6 +451,19 @@ class TaskScheduler:
                 "builtin_handler": "reasoning_reflection",
             },
         },
+        {
+            "name": "weather_traffic_alerts",
+            "description": "Proactive weather (NWS) and traffic (TomTom) alert monitoring",
+            "task_type": "builtin",
+            "schedule_type": "interval",
+            "interval_seconds": None,  # resolved from settings.alert_monitor.check_interval_seconds
+            "timeout_seconds": 60,
+            "enabled": True,
+            "metadata": {
+                "builtin_handler": "weather_traffic_alerts",
+                "notify": False,
+            },
+        },
     ]
 
     async def _ensure_default_tasks(self) -> None:
@@ -470,6 +483,7 @@ class TaskScheduler:
                 "email_draft": settings.email_draft.schedule_interval_seconds,
                 "email_intake": settings.email_intake.interval_seconds,
                 "email_stale_check": settings.email_stale_check.interval_seconds,
+                "weather_traffic_alerts": settings.alert_monitor.check_interval_seconds,
             }
 
             # Merge pipeline interval overrides from registry
@@ -566,6 +580,7 @@ class TaskScheduler:
                 "email_draft": settings.email_draft.schedule_interval_seconds,
                 "email_intake": settings.email_intake.interval_seconds,
                 "email_stale_check": settings.email_stale_check.interval_seconds,
+                "weather_traffic_alerts": settings.alert_monitor.check_interval_seconds,
             }
 
             # Merge pipeline interval overrides
