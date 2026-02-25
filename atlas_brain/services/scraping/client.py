@@ -82,6 +82,9 @@ class AntiDetectionClient:
         # Profile pinning: once a CAPTCHA is solved, reuse the same profile
         # so the User-Agent matches what was sent to the solver.
         pinned_profile: BrowserProfile | None = None
+        # If the solver swapped the UA (e.g. CapSolver requires Chrome 137+),
+        # override the header on the retry so cookies match the solved UA.
+        override_ua: str | None = None
 
         for attempt in range(max_retries + 1):
             try:
@@ -103,6 +106,8 @@ class AntiDetectionClient:
                     referer=referer,
                     proxy_geo=proxy.geo if proxy else None,
                 )
+                if override_ua:
+                    headers["User-Agent"] = override_ua
 
                 # 5. Random delay (human-like)
                 delay = random.uniform(self._min_delay, self._max_delay)
@@ -113,12 +118,13 @@ class AntiDetectionClient:
 
                 # 6. Execute via curl_cffi with matching TLS fingerprint
                 domain_cookies = self._get_domain_cookies(domain)
+                effective_proxy = proxy.url if proxy else None
                 async with AsyncSession(impersonate=profile.impersonate) as session:
                     resp = await session.get(
                         url,
                         headers=headers,
                         cookies=domain_cookies if domain_cookies else None,
-                        proxy=proxy.url if proxy else None,
+                        proxy=effective_proxy,
                         timeout=30,
                     )
 
@@ -145,12 +151,15 @@ class AntiDetectionClient:
                                     user_agent=profile.user_agent,
                                     proxy_url=proxy.url if proxy else None,
                                 )
-                                # Store solved cookies and pin profile
+                                # Store solved cookies and pin profile/proxy
                                 self._get_domain_cookies(domain).update(solution.cookies)
                                 pinned_profile = profile
+                                if solution.user_agent:
+                                    override_ua = solution.user_agent
                                 logger.info(
-                                    "CAPTCHA solved for %s in %dms, retrying",
+                                    "CAPTCHA solved for %s in %dms, retrying (ua_override=%s)",
                                     domain, solution.solve_time_ms,
+                                    bool(solution.user_agent),
                                 )
                                 continue
                             except Exception as solve_exc:

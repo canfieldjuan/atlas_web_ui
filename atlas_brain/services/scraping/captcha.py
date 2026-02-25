@@ -66,17 +66,27 @@ _DD_PATTERN = re.compile(
 
 
 def _extract_datadome_params(html: str) -> dict[str, str]:
-    """Extract cid, hsh, host from DataDome's ``var dd={...}`` JS block."""
+    """Extract all params from DataDome's ``var dd={...}`` JS block.
+
+    CapSolver requires the full captchaUrl with cid, hsh (hash), t, s, e,
+    and the page referer.  The ``t`` field is critical: ``fe`` = solvable,
+    ``bv`` = IP banned by DataDome (must rotate proxy).
+    """
     m = _DD_PATTERN.search(html)
     if not m:
         return {}
 
     raw = m.group(1)
     params: dict[str, str] = {}
-    for key in ("cid", "hsh", "host"):
-        km = re.search(rf"['\"]?{key}['\"]?\s*:\s*['\"]([^'\"]+)['\"]", raw)
+    for key in ("cid", "hsh", "host", "t", "s", "e", "rt", "qp", "cookie"):
+        km = re.search(rf"['\"]?{key}['\"]?\s*:\s*['\"]([^'\"]*)['\"]", raw)
         if km:
             params[key] = km.group(1)
+        else:
+            # Try numeric values (s is an integer in the JS object)
+            km = re.search(rf"['\"]?{key}['\"]?\s*:\s*(\d+)", raw)
+            if km:
+                params[key] = km.group(1)
     return params
 
 
@@ -91,15 +101,47 @@ class CaptchaSolution:
 
     cookies: dict[str, str]
     solve_time_ms: int
+    user_agent: str | None = None  # UA used for the solve (may differ from request UA)
 
 
 # ---------------------------------------------------------------------------
 # Solver
 # ---------------------------------------------------------------------------
 
+# CapSolver requires Chrome 137-144 for DataDome tasks.
+# This UA is used when the request UA is not in the supported range.
+_CAPSOLVER_SUPPORTED_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+)
+_CAPSOLVER_MIN_CHROME = 137
+_CAPSOLVER_MAX_CHROME = 144
+
 # Polling settings
 _POLL_INTERVAL_S = 3
 _MAX_POLL_ATTEMPTS = 60  # 3s * 60 = 180s max wait
+
+
+def _convert_proxy_for_capsolver(proxy_url: str) -> str:
+    """Convert ``http://user:pass@host:port`` to CapSolver's ``host:port:user:pass`` format."""
+    from urllib.parse import urlparse
+    p = urlparse(proxy_url)
+    if p.username and p.password:
+        return f"{p.hostname}:{p.port}:{p.username}:{p.password}"
+    return f"{p.hostname}:{p.port}"
+
+
+def _ensure_capsolver_ua(user_agent: str) -> tuple[str, bool]:
+    """Return a CapSolver-compatible UA. Returns (ua, was_swapped)."""
+    m = re.search(r"Chrome/(\d+)", user_agent)
+    if m:
+        ver = int(m.group(1))
+        if _CAPSOLVER_MIN_CHROME <= ver <= _CAPSOLVER_MAX_CHROME:
+            return user_agent, False
+    # UA not supported — swap to a known-good one
+    logger.info("Swapping UA for CapSolver (original not in Chrome %d-%d range)",
+                _CAPSOLVER_MIN_CHROME, _CAPSOLVER_MAX_CHROME)
+    return _CAPSOLVER_SUPPORTED_UA, True
 
 
 class CaptchaSolver:
@@ -133,9 +175,16 @@ class CaptchaSolver:
         """
         t0 = time.monotonic()
 
+        # CapSolver requires Chrome 137-144 for DataDome.
+        # If current UA is outside that range, swap to a supported one.
+        solve_ua = user_agent
+        ua_swapped = False
+        if self._provider == "capsolver" and captcha_type == CaptchaType.DATADOME:
+            solve_ua, ua_swapped = _ensure_capsolver_ua(user_agent)
+
         if self._provider == "capsolver":
             cookies = await self._solve_capsolver(
-                captcha_type, page_url, page_html, user_agent, proxy_url,
+                captcha_type, page_url, page_html, solve_ua, proxy_url,
             )
         else:
             cookies = await self._solve_2captcha(
@@ -144,10 +193,14 @@ class CaptchaSolver:
 
         elapsed = int((time.monotonic() - t0) * 1000)
         logger.info(
-            "CAPTCHA solved: type=%s provider=%s time=%dms",
-            captcha_type.value, self._provider, elapsed,
+            "CAPTCHA solved: type=%s provider=%s time=%dms ua_swapped=%s",
+            captcha_type.value, self._provider, elapsed, ua_swapped,
         )
-        return CaptchaSolution(cookies=cookies, solve_time_ms=elapsed)
+        return CaptchaSolution(
+            cookies=cookies,
+            solve_time_ms=elapsed,
+            user_agent=solve_ua if ua_swapped else None,
+        )
 
     # -- CapSolver ----------------------------------------------------------
 
@@ -165,14 +218,35 @@ class CaptchaSolver:
             dd = _extract_datadome_params(page_html)
             if not dd or "cid" not in dd:
                 logger.warning("Failed to extract DataDome params from challenge page")
+
+            # t=bv means IP is banned by DataDome — solver cannot help
+            if dd.get("t") == "bv":
+                raise RuntimeError(
+                    "DataDome returned t=bv (IP banned) — rotate proxy before solving"
+                )
+
+            # Build full captchaUrl with all params CapSolver requires
+            from urllib.parse import quote, urlencode
+            host = dd.get("host", "geo.captcha-delivery.com")
+            captcha_params = {
+                "initialCid": dd.get("cid", ""),
+                "hash": dd.get("hsh", ""),
+                "cid": dd.get("cid", ""),
+                "t": dd.get("t", "fe"),
+                "referer": quote(page_url, safe=""),
+                "s": dd.get("s", ""),
+                "e": dd.get("e", ""),
+            }
+            captcha_url = f"https://{host}/captcha/?{urlencode(captcha_params)}"
+
             task: dict = {
-                "type": "DatadomeSliderTask" if proxy_url else "DatadomeSliderTaskProxyless",
+                "type": "DatadomeSliderTask",
                 "websiteURL": page_url,
-                "captchaUrl": f"https://{dd.get('host', 'geo.captcha-delivery.com')}/captcha/?initialCid={dd.get('cid', '')}&hash={dd.get('hsh', '')}",
+                "captchaUrl": captcha_url,
                 "userAgent": user_agent,
             }
             if proxy_url:
-                task["proxy"] = proxy_url
+                task["proxy"] = _convert_proxy_for_capsolver(proxy_url)
 
         elif captcha_type == CaptchaType.CLOUDFLARE:
             task = {
@@ -181,7 +255,7 @@ class CaptchaSolver:
                 "metadata": {"type": "managed"},
             }
             if proxy_url:
-                task["proxy"] = proxy_url
+                task["proxy"] = _convert_proxy_for_capsolver(proxy_url)
         else:
             raise ValueError(f"Unsupported captcha type for CapSolver: {captcha_type}")
 
@@ -191,11 +265,17 @@ class CaptchaSolver:
                 f"{base}/createTask",
                 json={"clientKey": self._api_key, "task": task},
             )
-            resp.raise_for_status()
-            data = resp.json()
+            try:
+                data = resp.json()
+            except Exception:
+                resp.raise_for_status()
+                raise RuntimeError(f"CapSolver returned non-JSON response: {resp.status_code}")
 
         if data.get("errorId", 0) != 0:
-            raise RuntimeError(f"CapSolver createTask error: {data.get('errorDescription', data)}")
+            raise RuntimeError(
+                f"CapSolver createTask error ({resp.status_code}): "
+                f"{data.get('errorCode', '?')} — {data.get('errorDescription', data)}"
+            )
 
         task_id = data["taskId"]
         return await self._poll_capsolver(base, task_id)
@@ -236,7 +316,24 @@ class CaptchaSolver:
             dd = _extract_datadome_params(page_html)
             if not dd or "cid" not in dd:
                 logger.warning("Failed to extract DataDome params from challenge page (2Captcha path)")
-            captcha_url = f"https://{dd.get('host', 'geo.captcha-delivery.com')}/captcha/?initialCid={dd.get('cid', '')}&hash={dd.get('hsh', '')}"
+
+            if dd.get("t") == "bv":
+                raise RuntimeError(
+                    "DataDome returned t=bv (IP banned) — rotate proxy before solving"
+                )
+
+            from urllib.parse import quote, urlencode
+            host = dd.get("host", "geo.captcha-delivery.com")
+            captcha_qs = {
+                "initialCid": dd.get("cid", ""),
+                "hash": dd.get("hsh", ""),
+                "cid": dd.get("cid", ""),
+                "t": dd.get("t", "fe"),
+                "referer": quote(page_url, safe=""),
+                "s": dd.get("s", ""),
+                "e": dd.get("e", ""),
+            }
+            captcha_url = f"https://{host}/captcha/?{urlencode(captcha_qs)}"
             params: dict = {
                 "key": self._api_key,
                 "method": "datadome",
