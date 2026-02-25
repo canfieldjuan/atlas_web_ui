@@ -210,6 +210,7 @@ class HeadlessRunner:
                     title=title,
                     priority=priority,
                     tags=tags,
+                    markdown=True,
                 )
                 logger.info("Sent notification for task '%s'", task.name)
             except Exception:

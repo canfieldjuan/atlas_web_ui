@@ -150,10 +150,11 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
     # Send ntfy notification
     from ...pipelines.notify import send_pipeline_notification
 
-    analysis_text = parsed.get("analysis_text", analysis)
     await send_pipeline_notification(
-        analysis_text, task, title="Atlas: Daily Intelligence",
+        parsed.get("analysis_text", analysis), task,
+        title="Atlas: Daily Intelligence",
         default_tags="brain,chart_with_upwards_trend",
+        parsed=parsed,
     )
 
     return {
