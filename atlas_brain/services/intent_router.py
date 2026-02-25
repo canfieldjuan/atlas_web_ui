@@ -711,11 +711,16 @@ class SemanticIntentRouter:
                 "- conversation: general chat, personal questions, opinions, "
                 "knowledge recall, or anything not matching above\n"
                 f'User query: "{query}"\n'
-                'Respond with ONLY JSON: {"route": "<name>", "confidence": <0.0-1.0>, '
-                '"entity": "<main subject name or null>"}'
+                'Respond with ONLY a single JSON object, nothing else:\n'
+                '{"route": "<name>", "confidence": <0.0-1.0>, '
+                '"entity": "<main subject name or null>"}\n'
+                'Do NOT add explanations, examples, or markdown fencing.'
             )
 
-            messages = [Message(role="user", content=prompt)]
+            messages = [
+                Message(role="system", content="You are a JSON classifier. Output raw JSON only. Never add commentary."),
+                Message(role="user", content=prompt),
+            ]
 
             result = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
@@ -740,6 +745,13 @@ class SemanticIntentRouter:
                 think_end = response_text.rfind("</think>")
                 if think_end >= 0:
                     response_text = response_text[think_end + 8:].strip()
+
+            # Extract first JSON object (some models add explanation after)
+            brace_start = response_text.find("{")
+            if brace_start >= 0:
+                brace_end = response_text.find("}", brace_start)
+                if brace_end >= 0:
+                    response_text = response_text[brace_start:brace_end + 1]
 
             parsed = json.loads(response_text)
             route = parsed.get("route", "")

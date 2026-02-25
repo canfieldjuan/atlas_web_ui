@@ -139,9 +139,11 @@ class CommandSegmenter:
             self._asr_active_until = time.monotonic() + self._asr_holdoff_ms / 1000.0
 
         # Consecutive silence counter (same as before, using threshold).
-        # Treat ASR producing new words as speech evidence even when VAD
-        # disagrees (VAD can give low prob on quiet or clipped speech).
-        is_speech = speech_prob > self._speech_threshold or asr_active
+        # Trust ASR as speech evidence only when VAD shows SOME activity
+        # (prob > 0.10). This catches quiet/clipped speech (VAD 0.1-0.5)
+        # that ASR confirms, but ignores ASR oscillation during pure
+        # silence (VAD 0.0-0.04) which would reset the counter forever.
+        is_speech = speech_prob > self._speech_threshold or (asr_active and speech_prob > 0.10)
         if is_speech:
             self.silence_counter = 0
             self.hangover_counter = 0

@@ -407,7 +407,10 @@ class FrameProcessor:
                         self._early_silence_fired = False
                         self._recording_silence_frames = 0
                     self.segmenter.reset()
-                    # Widen thresholds for conversation recording
+                    # Widen thresholds for conversation recording.
+                    # min_speech_frames=0: VAD already confirmed speech above,
+                    # so don't require additional non-preroll speech frames
+                    # (preroll frames are is_preroll=True and don't count).
                     self.segmenter.update_thresholds(
                         max_command_seconds=self._conversation_max_command_seconds,
                         silence_ms=self._conversation_silence_ms,
@@ -415,6 +418,7 @@ class FrameProcessor:
                         window_frames=self._conversation_window_frames,
                         silence_ratio=self._conversation_silence_ratio,
                         asr_holdoff_ms=self._conversation_asr_holdoff_ms,
+                        min_speech_frames=0,
                     )
 
                     # Connect streaming ASR if available
@@ -458,7 +462,10 @@ class FrameProcessor:
                     self._early_silence_fired = False
                     self._recording_silence_frames = 0
                 self.segmenter.reset()
-                # Widen thresholds for conversation recording
+                # Widen thresholds for conversation recording.
+                # min_speech_frames=0: wake word itself is evidence of speech
+                # intent — don't gate on non-preroll speech frames (preroll
+                # frames don't count, causing infinite hang on false wakes).
                 self.segmenter.update_thresholds(
                     max_command_seconds=self._conversation_max_command_seconds,
                     silence_ms=self._conversation_silence_ms,
@@ -466,6 +473,7 @@ class FrameProcessor:
                     window_frames=self._conversation_window_frames,
                     silence_ratio=self._conversation_silence_ratio,
                     asr_holdoff_ms=self._conversation_asr_holdoff_ms,
+                    min_speech_frames=0,
                 )
                 self._connect_streaming_asr("for wake word re-engagement")
 

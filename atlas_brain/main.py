@@ -227,6 +227,21 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.debug("Startup model swap check failed: %s", e)
 
+    # Pre-warm intent classifier model so first fallback query is fast.
+    if (settings.intent_router.llm_fallback_enabled
+            and settings.llm.default_model == "ollama"):
+        from .services.llm.model_manager import load_model as _load_model
+
+        _fallback_model = settings.intent_router.llm_fallback_model
+
+        async def _startup_warm_fallback():
+            ok = await _load_model(_fallback_model, settings.llm.ollama_url, keep_alive="2h")
+            logger.info(
+                "Startup: pre-warmed fallback classifier %s (ok=%s)",
+                _fallback_model, ok,
+            )
+        asyncio.create_task(_startup_warm_fallback())
+
     # Initialize cloud LLM for business workflows (booking, email)
     if settings.llm.cloud_enabled:
         from .services.llm_router import init_cloud_llm

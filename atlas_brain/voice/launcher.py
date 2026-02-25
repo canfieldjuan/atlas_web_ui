@@ -863,10 +863,6 @@ def _create_early_prep_runner():
 
             # Intent routing on partial transcript
             route_result = await route_query(partial_transcript)
-            if route_result.action_category != "conversation":
-                logger.debug("Early prep: non-conversation intent (%s), skipping",
-                             route_result.action_category)
-                return  # Not conversation, don't bother caching
 
             # Entity-aware search (parallel vector + graph traversal)
             pre_fetched = None

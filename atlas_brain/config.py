@@ -1286,7 +1286,7 @@ class IntentRouterConfig(BaseSettings):
         description="Use LLM when semantic confidence is too low",
     )
     llm_fallback_timeout: float = Field(
-        default=2.0,
+        default=3.0,
         description="Timeout in seconds for LLM fallback classification",
     )
     llm_fallback_temperature: float = Field(
@@ -1300,7 +1300,7 @@ class IntentRouterConfig(BaseSettings):
         description="Max tokens for LLM fallback classification response",
     )
     llm_fallback_model: str = Field(
-        default="qwen3:1.7b",
+        default="phi3:mini",
         description="Ollama model for LLM fallback classification (lighter than main model)",
     )
     llm_fallback_log: str = Field(
@@ -1939,6 +1939,23 @@ class ExternalDataConfig(BaseSettings):
     pressure_baseline_window_days: int = Field(default=180, description="Rolling window for baseline (6 months)")
     pressure_alert_threshold: float = Field(default=7.0, description="Pressure score alert threshold (0-10)")
     pressure_drift_alert_threshold: float = Field(default=2.0, description="Sentiment drift alert threshold")
+    # Complaint mining
+    complaint_mining_enabled: bool = Field(default=False, description="Enable complaint mining pipeline")
+    complaint_enrichment_interval_seconds: int = Field(default=300, description="Complaint enrichment polling interval (5 min)")
+    complaint_enrichment_max_per_batch: int = Field(default=20, description="Max reviews to enrich per batch")
+    complaint_enrichment_max_attempts: int = Field(default=3, description="Max enrichment attempts before marking failed")
+    complaint_enrichment_local_only: bool = Field(default=False, description="Force local LLM for enrichment (skip Claude)")
+    complaint_enrichment_reviews_per_call: int = Field(default=1, description="Reviews per LLM call (batch mode when >1, max 10)")
+    complaint_analysis_enabled: bool = Field(default=True, description="Enable daily complaint analysis task")
+    complaint_analysis_cron: str = Field(default="0 21 * * *", description="Cron for complaint analysis (default 9 PM)")
+    complaint_analysis_window_days: int = Field(default=7, description="Days of enriched reviews to include in analysis")
+    complaint_analysis_max_tokens: int = Field(default=16384, description="Max tokens for analysis LLM call")
+    complaint_retention_days: int = Field(default=365, description="Days to retain complaint reports")
+    # Content generation (Claude-powered)
+    complaint_content_enabled: bool = Field(default=True, description="Enable complaint content generation")
+    complaint_content_cron: str = Field(default="0 22 * * *", description="Cron for content generation (default 10 PM)")
+    complaint_content_max_per_run: int = Field(default=5, description="Max content pieces to generate per run")
+    complaint_content_max_tokens: int = Field(default=4096, description="Max tokens per content generation call")
 
 
 class TemporalPatternConfig(BaseSettings):
