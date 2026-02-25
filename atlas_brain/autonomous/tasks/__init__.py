@@ -31,10 +31,6 @@ _BUILTIN_TASKS = [
     ("monthly_invoice_generation", "run", "monthly_invoice_generation"),
     ("reasoning_tick", "run", "reasoning_tick"),
     ("reasoning_reflection", "run", "reasoning_reflection"),
-    ("news_intake", "run", "news_intake"),
-    ("market_intake", "run", "market_intake"),
-    ("daily_intelligence", "run", "daily_intelligence"),
-    ("article_enrichment", "run", "article_enrichment"),
 ]
 
 
@@ -51,3 +47,14 @@ def register_builtin_tasks(runner) -> None:
     """Register all builtin task handlers."""
     for module_name, attr, task_name in _BUILTIN_TASKS:
         _safe_register(runner, module_name, attr, task_name)
+
+    # Register pipeline tasks dynamically from the pipeline registry
+    try:
+        from . import _pipelines  # noqa: F401 -- triggers pipeline registration
+
+        from atlas_brain.pipelines import get_pipeline_task_defs
+
+        for module_name, attr, task_name in get_pipeline_task_defs():
+            _safe_register(runner, module_name, attr, task_name)
+    except Exception:
+        logger.error("Failed to load pipeline tasks", exc_info=True)

@@ -451,46 +451,6 @@ class TaskScheduler:
                 "builtin_handler": "reasoning_reflection",
             },
         },
-        {
-            "name": "news_intake",
-            "description": "Poll news feeds, match watchlist keywords, store for daily intelligence",
-            "task_type": "builtin",
-            "schedule_type": "interval",
-            "interval_seconds": None,  # resolved from settings.external_data.news_interval_seconds
-            "timeout_seconds": 120,
-            "metadata": {"builtin_handler": "news_intake"},
-        },
-        {
-            "name": "market_intake",
-            "description": "Poll market prices for watchlist symbols, store snapshots for daily intelligence",
-            "task_type": "builtin",
-            "schedule_type": "interval",
-            "interval_seconds": None,  # resolved from settings.external_data.market_interval_seconds
-            "timeout_seconds": 60,
-            "metadata": {"builtin_handler": "market_intake"},
-        },
-        {
-            "name": "daily_intelligence",
-            "description": "Daily deep analysis of accumulated market, news, and business data",
-            "task_type": "builtin",
-            "schedule_type": "cron",
-            "cron_expression": "0 20 * * *",
-            "timeout_seconds": 300,
-            "metadata": {
-                "builtin_handler": "daily_intelligence",
-                "notify_priority": "default",
-                "notify_tags": "brain,chart_with_upwards_trend",
-            },
-        },
-        {
-            "name": "article_enrichment",
-            "description": "Fetch article content and classify via SORAM pressure channels",
-            "task_type": "builtin",
-            "schedule_type": "interval",
-            "interval_seconds": None,
-            "timeout_seconds": 180,
-            "metadata": {"builtin_handler": "article_enrichment"},
-        },
     ]
 
     async def _ensure_default_tasks(self) -> None:
@@ -510,12 +470,26 @@ class TaskScheduler:
                 "email_draft": settings.email_draft.schedule_interval_seconds,
                 "email_intake": settings.email_intake.interval_seconds,
                 "email_stale_check": settings.email_stale_check.interval_seconds,
-                "news_intake": settings.external_data.news_interval_seconds,
-                "market_intake": settings.external_data.market_interval_seconds,
-                "article_enrichment": settings.external_data.enrichment_interval_seconds,
             }
 
-            for task_def in self._DEFAULT_TASKS:
+            # Merge pipeline interval overrides from registry
+            try:
+                from ..pipelines import get_pipeline_interval_overrides, get_pipeline_default_tasks, resolve_config_value
+
+                for task_name, config_key in get_pipeline_interval_overrides().items():
+                    val = resolve_config_value(config_key)
+                    if val is not None:
+                        _interval_overrides[task_name] = val
+
+                # Add pipeline task definitions
+                pipeline_tasks = get_pipeline_default_tasks()
+            except Exception:
+                logger.debug("Pipeline registry not available for seeding", exc_info=True)
+                pipeline_tasks = []
+
+            all_task_defs = list(self._DEFAULT_TASKS) + pipeline_tasks
+
+            for task_def in all_task_defs:
                 # Apply runtime interval override if the definition left it as None
                 if task_def.get("interval_seconds") is None and task_def["name"] in _interval_overrides:
                     task_def = {**task_def, "interval_seconds": _interval_overrides[task_def["name"]]}
@@ -592,8 +566,18 @@ class TaskScheduler:
                 "email_draft": settings.email_draft.schedule_interval_seconds,
                 "email_intake": settings.email_intake.interval_seconds,
                 "email_stale_check": settings.email_stale_check.interval_seconds,
-                "article_enrichment": settings.external_data.enrichment_interval_seconds,
             }
+
+            # Merge pipeline interval overrides
+            try:
+                from ..pipelines import get_pipeline_interval_overrides, resolve_config_value
+
+                for task_name, config_key in get_pipeline_interval_overrides().items():
+                    val = resolve_config_value(config_key)
+                    if val is not None:
+                        interval_overrides[task_name] = val
+            except Exception:
+                logger.debug("Pipeline interval overrides unavailable", exc_info=True)
 
             for task_name, desired_interval in interval_overrides.items():
                 task = await repo.get_by_name(task_name)
@@ -615,8 +599,18 @@ class TaskScheduler:
                 "model_swap_night": settings.llm.model_swap_night_cron,
                 "email_graph_sync": "0 1 * * *",
                 "reasoning_reflection": settings.reasoning.reflection_cron,
-                "daily_intelligence": settings.external_data.intelligence_cron,
             }
+
+            # Merge pipeline cron overrides
+            try:
+                from ..pipelines import get_pipeline_cron_overrides, resolve_config_value as _rcv
+
+                for task_name, config_key in get_pipeline_cron_overrides().items():
+                    val = _rcv(config_key)
+                    if val is not None:
+                        cron_overrides[task_name] = val
+            except Exception:
+                logger.debug("Pipeline cron overrides unavailable", exc_info=True)
 
             for task_name, desired_cron in cron_overrides.items():
                 task = await repo.get_by_name(task_name)

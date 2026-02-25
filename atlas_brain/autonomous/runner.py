@@ -404,80 +404,24 @@ class HeadlessRunner:
             except Exception as e:
                 logger.warning("Email drafts expiration failed: %s", e)
 
-            # External data dedup cleanup
+            # Pipeline cleanup rules (registered dynamically)
             try:
-                from ..config import settings as _settings
-                ext_retention = _settings.external_data.retention_days
-                dedup_result = await pool.execute(
-                    """
-                    DELETE FROM data_dedup
-                    WHERE first_seen_at < CURRENT_TIMESTAMP - make_interval(days => $1)
-                    """,
-                    ext_retention,
-                )
-                result["data_dedup_cleaned"] = dedup_result
-            except Exception as e:
-                logger.debug("Data dedup cleanup skipped: %s", e)
+                from ..pipelines import get_pipeline_cleanup_rules, resolve_config_value
 
-            # Market snapshots cleanup
-            try:
-                from ..config import settings as _settings
-                ext_retention = _settings.external_data.retention_days
-                snapshots_result = await pool.execute(
-                    """
-                    DELETE FROM market_snapshots
-                    WHERE snapshot_at < CURRENT_TIMESTAMP - make_interval(days => $1)
-                    """,
-                    ext_retention,
-                )
-                result["market_snapshots_cleaned"] = snapshots_result
+                for rule, pipeline_name in get_pipeline_cleanup_rules():
+                    try:
+                        retention = resolve_config_value(rule.retention_config_key)
+                        if retention is None:
+                            continue
+                        key = rule.result_key or f"{rule.table}_cleaned"
+                        cleanup_result = await pool.execute(rule.where_clause, retention)
+                        result[key] = cleanup_result
+                    except Exception as e:
+                        logger.debug(
+                            "%s/%s cleanup skipped: %s", pipeline_name, rule.table, e,
+                        )
             except Exception as e:
-                logger.debug("Market snapshots cleanup skipped: %s", e)
-
-            # News articles cleanup
-            try:
-                from ..config import settings as _settings
-                news_retention = _settings.external_data.intelligence_news_retention_days
-                news_result = await pool.execute(
-                    """
-                    DELETE FROM news_articles
-                    WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
-                    """,
-                    news_retention,
-                )
-                result["news_articles_cleaned"] = news_result
-            except Exception as e:
-                logger.debug("News articles cleanup skipped: %s", e)
-
-            # Reasoning journal cleanup
-            try:
-                from ..config import settings as _settings
-                journal_retention = _settings.external_data.intelligence_journal_retention_days
-                journal_result = await pool.execute(
-                    """
-                    DELETE FROM reasoning_journal
-                    WHERE created_at < CURRENT_TIMESTAMP - make_interval(days => $1)
-                    """,
-                    journal_retention,
-                )
-                result["reasoning_journal_cleaned"] = journal_result
-            except Exception as e:
-                logger.debug("Reasoning journal cleanup skipped: %s", e)
-
-            # Entity pressure baselines cleanup
-            try:
-                from ..config import settings as _settings
-                journal_retention = _settings.external_data.intelligence_journal_retention_days
-                baselines_result = await pool.execute(
-                    """
-                    DELETE FROM entity_pressure_baselines
-                    WHERE last_computed_at < CURRENT_TIMESTAMP - make_interval(days => $1)
-                    """,
-                    journal_retention,
-                )
-                result["pressure_baselines_cleaned"] = baselines_result
-            except Exception as e:
-                logger.debug("Pressure baselines cleanup skipped: %s", e)
+                logger.debug("Pipeline cleanup rules unavailable: %s", e)
 
         return result
 

@@ -13,7 +13,6 @@ runner does not double-synthesize.
 import asyncio
 import json
 import logging
-import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -223,61 +222,28 @@ async def _classify_soram(
     matched_keywords: list[str],
 ) -> dict[str, Any] | None:
     """Classify article via triage LLM using soram_classification skill."""
-    from ...skills import get_skill_registry
-    from ...services.llm_router import get_triage_llm
-    from ...services.protocols import Message
+    from ...pipelines.llm import call_llm_with_skill, clean_llm_output
 
-    skill = get_skill_registry().get("digest/soram_classification")
-    if not skill:
-        logger.warning("Skill 'digest/soram_classification' not found")
-        return None
-
-    llm = get_triage_llm()
-    if llm is None:
-        # Fall back to active LLM
-        from ...services import llm_registry
-
-        llm = llm_registry.get_active()
-    if llm is None:
-        logger.warning("No LLM available for SORAM classification")
-        return None
-
-    # Truncate content for the classification call
     truncated = content[:3000] if content else ""
 
-    user_payload = json.dumps({
+    payload = {
         "title": title,
         "content": truncated,
         "matched_keywords": matched_keywords,
-    })
+    }
 
-    messages = [
-        Message(role="system", content=skill.content),
-        Message(role="user", content=user_payload),
-    ]
+    text = call_llm_with_skill(
+        "digest/soram_classification", payload,
+        max_tokens=512, temperature=0.1,
+        prefer_cloud=True, try_openrouter=False, auto_activate_ollama=False,
+    )
+    if not text:
+        return None
 
     try:
-        result = llm.chat(
-            messages=messages,
-            max_tokens=512,
-            temperature=0.1,
-        )
-        text = result.get("response", "").strip()
-        if not text:
-            return None
+        cleaned = clean_llm_output(text)
+        parsed = json.loads(cleaned)
 
-        # Strip <think> tags (Qwen3 models)
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-
-        # Try to parse JSON
-        # Try ```json blocks first
-        json_match = re.search(r"```json\s*(.*?)```", text, re.DOTALL)
-        if json_match:
-            text = json_match.group(1)
-
-        parsed = json.loads(text)
-
-        # Validate expected structure
         if "soram_channels" not in parsed:
             logger.debug("SORAM classification missing soram_channels field")
             return None

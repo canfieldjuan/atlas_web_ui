@@ -11,7 +11,6 @@ runner does not double-synthesize.
 import asyncio
 import json
 import logging
-import re
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -88,12 +87,17 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
     }
 
     # Load skill and call LLM
-    analysis = await _run_llm_analysis(payload, cfg.intelligence_max_tokens)
+    from ...pipelines.llm import call_llm_with_skill, parse_json_response
+
+    analysis = call_llm_with_skill(
+        "digest/daily_intelligence", payload,
+        max_tokens=cfg.intelligence_max_tokens, temperature=0.4,
+    )
     if not analysis:
         return {"_skip_synthesis": "LLM analysis failed"}
 
     # Parse structured output from LLM
-    parsed = _parse_analysis(analysis)
+    parsed = parse_json_response(analysis, recover_truncated=True)
 
     # Persist to reasoning_journal
     pressure_readings = parsed.get("pressure_readings", [])
@@ -136,8 +140,13 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         await _upsert_pressure_baselines(pool, pressure_readings)
 
     # Send ntfy notification
+    from ...pipelines.notify import send_pipeline_notification
+
     analysis_text = parsed.get("analysis_text", analysis)
-    await _send_notification(analysis_text, task)
+    await send_pipeline_notification(
+        analysis_text, task, title="Atlas: Daily Intelligence",
+        default_tags="brain,chart_with_upwards_trend",
+    )
 
     return {
         "_skip_synthesis": "Daily intelligence complete",
@@ -473,177 +482,3 @@ async def _upsert_pressure_baselines(
         logger.info("Upserted %d entity pressure baselines", upserted)
 
 
-# ------------------------------------------------------------------
-# LLM analysis
-# ------------------------------------------------------------------
-
-
-async def _run_llm_analysis(payload: dict[str, Any], max_tokens: int) -> str | None:
-    """Load skill, call LLM, return raw text response.
-
-    Prefers Anthropic (triage LLM) for reliable JSON output.
-    Falls back to local Ollama if Anthropic is unavailable.
-    """
-    from ...skills import get_skill_registry
-    from ...services import llm_registry
-    from ...services.llm_router import get_triage_llm
-    from ...services.protocols import Message
-
-    skill = get_skill_registry().get("digest/daily_intelligence")
-    if not skill:
-        logger.warning("Skill 'digest/daily_intelligence' not found")
-        return None
-
-    # Prefer Anthropic for structured JSON output
-    llm = get_triage_llm()
-    if llm:
-        logger.debug("Using triage LLM (Anthropic) for daily intelligence")
-    else:
-        llm = llm_registry.get_active()
-    if llm is None:
-        try:
-            from ...config import settings as _settings
-            llm_registry.activate(
-                "ollama",
-                model=_settings.llm.ollama_model,
-                base_url=_settings.llm.ollama_url,
-            )
-            llm = llm_registry.get_active()
-            logger.info("Auto-activated Ollama LLM for daily intelligence")
-        except Exception as e:
-            logger.warning("Could not auto-activate LLM: %s", e)
-    if llm is None:
-        logger.warning("No active LLM for daily intelligence")
-        return None
-
-    messages = [
-        Message(role="system", content=skill.content),
-        Message(
-            role="user",
-            content=json.dumps(payload, indent=2, default=str),
-        ),
-    ]
-
-    try:
-        result = llm.chat(
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=0.4,
-        )
-        text = result.get("response", "").strip()
-        if not text:
-            logger.warning("LLM returned empty response for daily intelligence")
-            return None
-
-        # Strip <think> tags (Qwen3 models)
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-        return text
-
-    except Exception:
-        logger.exception("LLM call failed for daily intelligence")
-        return None
-
-
-def _parse_analysis(raw_text: str) -> dict[str, Any]:
-    """Extract structured JSON from LLM response. Falls back to raw text."""
-    # Try to find JSON block in the response
-    # Look for ```json ... ``` first
-    json_match = re.search(r"```json\s*(.*?)```", raw_text, re.DOTALL)
-    if json_match:
-        try:
-            return json.loads(json_match.group(1))
-        except json.JSONDecodeError:
-            pass
-
-    # Try to parse the entire response as JSON
-    try:
-        return json.loads(raw_text)
-    except json.JSONDecodeError:
-        pass
-
-    # Try to find any JSON object in the response
-    brace_match = re.search(r"\{.*\}", raw_text, re.DOTALL)
-    if brace_match:
-        try:
-            return json.loads(brace_match.group())
-        except json.JSONDecodeError:
-            pass
-
-    # Try to recover truncated JSON (output cut off by max_tokens)
-    recovered = _recover_truncated_json(raw_text)
-    if recovered:
-        return recovered
-
-    # Fallback: wrap raw text
-    return {"analysis_text": raw_text}
-
-
-def _recover_truncated_json(raw_text: str) -> dict[str, Any] | None:
-    """Attempt to recover a JSON object from truncated LLM output.
-
-    When max_tokens cuts off output mid-JSON, we try closing open
-    structures progressively to salvage whatever fields were complete.
-    """
-    # Find the start of JSON
-    start = raw_text.find("{")
-    if start < 0:
-        return None
-
-    text = raw_text[start:]
-
-    # Try closing open brackets/braces from the end
-    for trim in range(0, min(len(text), 500), 1):
-        candidate = text if trim == 0 else text[:-trim]
-        # Count unclosed structures
-        opens = candidate.count("{") - candidate.count("}")
-        open_brackets = candidate.count("[") - candidate.count("]")
-        if opens <= 0 and open_brackets <= 0:
-            continue
-        # Build closing sequence
-        suffix = "]" * max(open_brackets, 0) + "}" * max(opens, 0)
-        try:
-            result = json.loads(candidate + suffix)
-            if isinstance(result, dict) and result.get("analysis_text"):
-                logger.info(
-                    "Recovered truncated JSON (trimmed %d chars, closed %d braces)",
-                    trim, opens + open_brackets,
-                )
-                return result
-        except json.JSONDecodeError:
-            continue
-
-    return None
-
-
-# ------------------------------------------------------------------
-# Notification
-# ------------------------------------------------------------------
-
-
-async def _send_notification(analysis_text: str, task: ScheduledTask) -> None:
-    """Send ntfy push notification with analysis summary."""
-    from ...config import settings as _settings
-
-    if not _settings.autonomous.notify_results:
-        return
-    if not _settings.alerts.ntfy_enabled:
-        return
-    if (task.metadata or {}).get("notify") is False:
-        return
-
-    title = "Atlas: Daily Intelligence"
-    priority = (task.metadata or {}).get("notify_priority", "default")
-    tags = (task.metadata or {}).get("notify_tags", "brain,chart_with_upwards_trend")
-
-    try:
-        from ...tools.notify import notify_tool
-
-        await notify_tool._send_notification(
-            message=analysis_text[:4000],  # ntfy has a ~4KB limit
-            title=title,
-            priority=priority,
-            tags=tags,
-        )
-        logger.info("Sent daily intelligence notification")
-    except Exception:
-        logger.warning("Failed to send daily intelligence notification", exc_info=True)
