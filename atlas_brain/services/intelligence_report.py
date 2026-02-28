@@ -55,7 +55,7 @@ async def generate_report(
         return {"error": "Database not initialized"}
 
     # Gather data for this entity
-    pressure, articles, journal, graph_facts = await _gather_entity_data(
+    pressure, articles, journal, graph_facts, graph_network = await _gather_entity_data(
         pool, entity_name, entity_type, time_window_days,
     )
 
@@ -86,7 +86,7 @@ async def generate_report(
         payload = {
             "subject": entity_name,
             "time_window": f"last {time_window_days} days",
-            "relationships": _format_relationships(articles, graph_facts),
+            "relationships": _format_relationships(articles, graph_facts, graph_network),
             "signals": signals,
             "evidence": evidence,
             "risks": risks,
@@ -144,6 +144,7 @@ async def generate_report(
             "articles_analyzed": len(articles),
             "journal_entries_referenced": len(journal),
             "graph_facts_used": len(graph_facts),
+            "graph_network_paths": len(graph_network),
         },
         "pressure_snapshot": pressure_snapshot,
         "source_article_ids": source_ids,
@@ -287,15 +288,16 @@ async def _gather_entity_data(
     entity_name: str,
     entity_type: str,
     window_days: int,
-) -> tuple[dict, list[dict], list[dict], list[dict]]:
+) -> tuple[dict, list[dict], list[dict], list[dict], list[dict]]:
     """Gather all available data for an entity."""
     import asyncio
 
-    pressure, articles, journal, graph_facts = await asyncio.gather(
+    pressure, articles, journal, graph_facts, graph_network = await asyncio.gather(
         _fetch_pressure_baseline(pool, entity_name, entity_type),
         _fetch_entity_articles(pool, entity_name, window_days),
         _fetch_entity_journal(pool, entity_name, window_days),
         _fetch_graph_facts(entity_name),
+        _fetch_entity_network(entity_name),
         return_exceptions=True,
     )
 
@@ -311,8 +313,11 @@ async def _gather_entity_data(
     if isinstance(graph_facts, Exception):
         logger.warning("Graph facts fetch failed: %s", graph_facts)
         graph_facts = []
+    if isinstance(graph_network, Exception):
+        logger.warning("Graph network fetch failed: %s", graph_network)
+        graph_network = []
 
-    return pressure, articles, journal, graph_facts
+    return pressure, articles, journal, graph_facts, graph_network
 
 
 async def _fetch_pressure_baseline(
@@ -468,23 +473,47 @@ async def _fetch_entity_journal(
 
 
 async def _fetch_graph_facts(entity_name: str) -> list[dict[str, Any]]:
-    """Fetch relationship data from knowledge graph for this entity."""
+    """Fetch relationship data from knowledge graph using hybrid search + traversal."""
     try:
         from ..memory.rag_client import get_rag_client
 
         rag = get_rag_client()
-        result = await rag.search(
-            f"relationships and facts about {entity_name}",
+        # Use search_with_traversal for richer results: vector search + direct edges
+        result = await rag.search_with_traversal(
+            query=f"relationships and facts about {entity_name}",
+            entity_name=entity_name,
             max_facts=15,
         )
         if result and result.facts:
             return [
-                {"fact": f.fact, "source": f.name}
+                {
+                    "fact": f.fact,
+                    "source": f.name,
+                    "confidence": f.confidence,
+                    "source_type": getattr(f, "source_type", "search"),
+                }
                 for f in result.facts
                 if f.fact
             ]
     except Exception:
         logger.debug("Graph fact fetch failed for %s", entity_name, exc_info=True)
+    return []
+
+
+async def _fetch_entity_network(entity_name: str) -> list[dict[str, Any]]:
+    """Fetch multi-hop entity network for relationship mapping."""
+    try:
+        from ..memory.rag_client import get_rag_client
+
+        rag = get_rag_client()
+        paths = await rag.traverse_graph(
+            entity_name=entity_name,
+            max_hops=2,
+            direction="both",
+        )
+        return paths if isinstance(paths, list) else []
+    except Exception:
+        logger.debug("Entity network fetch failed for %s", entity_name, exc_info=True)
     return []
 
 
@@ -611,18 +640,53 @@ def _format_behavioral_triggers(
 
 
 def _format_relationships(
-    articles: list[dict], graph_facts: list[dict],
+    articles: list[dict],
+    graph_facts: list[dict],
+    graph_network: Optional[list[dict]] = None,
 ) -> list[dict[str, str]]:
     """Format relationship data for the full report skill."""
     rels = []
 
-    # From graph
+    # From graph search + traversal (includes confidence)
     for fact in graph_facts:
-        rels.append({
+        entry: dict[str, str] = {
             "type": "graph",
             "description": fact.get("fact", ""),
             "source": fact.get("source", "knowledge_graph"),
-        })
+        }
+        conf = fact.get("confidence")
+        if conf is not None:
+            entry["confidence"] = f"{conf:.2f}"
+        source_type = fact.get("source_type", "search")
+        if source_type != "search":
+            entry["retrieval"] = source_type
+        rels.append(entry)
+
+    # From multi-hop network traversal
+    for path_item in (graph_network or []):
+        if isinstance(path_item, dict):
+            rel_desc = path_item.get("relation") or path_item.get("fact") or ""
+            entity = path_item.get("entity", "")
+            hop = path_item.get("hop", 1)
+            if rel_desc:
+                rels.append({
+                    "type": f"network_hop_{hop}",
+                    "description": f"{entity}: {rel_desc}" if entity else rel_desc,
+                    "source": "graph_traversal",
+                })
+            # Handle nested path structures from Graphiti /traverse
+            for step in path_item.get("path", []):
+                if isinstance(step, dict):
+                    step_rel = step.get("relation", {})
+                    step_entity = step.get("entity", {})
+                    fact_text = step_rel.get("fact", "") if isinstance(step_rel, dict) else ""
+                    ent_name = step_entity.get("name", "") if isinstance(step_entity, dict) else ""
+                    if fact_text:
+                        rels.append({
+                            "type": "network_traversal",
+                            "description": f"{ent_name}: {fact_text}" if ent_name else fact_text,
+                            "source": "graph_traversal",
+                        })
 
     # From articles -- extract entity co-occurrences
     entity_pairs: dict[str, int] = {}

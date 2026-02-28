@@ -79,7 +79,7 @@ async def run_intervention_pipeline(
     channels = channels or ["internal comms"]
 
     # ---- Gather data (reuse from intelligence_report) ----
-    pressure, articles, journal, graph_facts = await _gather_entity_data(
+    pressure, articles, journal, graph_facts, graph_network = await _gather_entity_data(
         pool, entity_name, entity_type, time_window_days,
     )
 

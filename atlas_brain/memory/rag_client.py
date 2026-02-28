@@ -282,6 +282,64 @@ class RAGClient:
             self.search(query, max_facts=max_facts), timeout=t,
         )
 
+    async def traverse_graph(
+        self,
+        entity_name: str,
+        max_hops: int = 2,
+        direction: str = "both",
+        group_id: Optional[str] = None,
+    ) -> list[dict]:
+        """Multi-hop graph traversal starting from a named entity.
+
+        Calls the Graphiti /traverse endpoint if available. Falls back to
+        get_entity_edges() (single-hop) if the endpoint is not exposed.
+
+        Args:
+            entity_name: Starting entity name
+            max_hops: Maximum traversal depth (default 2)
+            direction: 'outgoing', 'incoming', or 'both'
+            group_id: Optional group ID
+
+        Returns:
+            List of path dicts with entity/relation steps, or empty list.
+        """
+        if not settings.memory.enabled:
+            return []
+
+        gid = group_id or settings.memory.group_id
+
+        try:
+            client = await self._get_client()
+            payload = {
+                "start_entity_name": entity_name,
+                "max_hops": max_hops,
+                "direction": direction,
+            }
+            if gid:
+                payload["group_id"] = gid
+
+            resp = await client.post("/traverse", json=payload)
+
+            if resp.status_code == 404:
+                # /traverse not supported -- fall back to single-hop edges
+                logger.debug("Graphiti /traverse not available, falling back to entity edges")
+                edge_result = await self.get_entity_edges(entity_name, group_id=gid)
+                return [
+                    {"entity": entity_name, "relation": f.name, "fact": f.fact, "hop": 1}
+                    for f in edge_result.facts
+                ]
+
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("paths", [])
+
+        except httpx.RequestError as e:
+            logger.warning("Graph traversal connection error: %s", e)
+            return []
+        except Exception as e:
+            logger.warning("Graph traversal error: %s", e)
+            return []
+
     async def enhance_prompt(
         self,
         query: str,
