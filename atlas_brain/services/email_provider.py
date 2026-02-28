@@ -194,7 +194,7 @@ class IMAPEmailProvider:
         self._mailbox: str = "INBOX"
         self._loaded = False
         self._cached_conn: imaplib.IMAP4 | None = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # reentrant: _get_thread_sync calls _get_message_sync
 
     def _load_config(self) -> None:
         if self._loaded:
@@ -243,33 +243,36 @@ class IMAPEmailProvider:
     def _get_conn(self) -> imaplib.IMAP4:
         """Return a cached IMAP connection, reconnecting if stale.
 
-        Thread-safe: sync methods run in executor threads via _run().
+        Caller MUST hold self._lock — all sync methods acquire the lock
+        for their entire duration to prevent concurrent IMAP operations
+        on the same connection (imaplib is not thread-safe).
         """
-        with self._lock:
-            if self._cached_conn is not None:
+        if self._cached_conn is not None:
+            try:
+                self._cached_conn.noop()
+                return self._cached_conn
+            except Exception:
                 try:
-                    self._cached_conn.noop()
-                    return self._cached_conn
+                    self._cached_conn.logout()
                 except Exception:
-                    try:
-                        self._cached_conn.logout()
-                    except Exception:
-                        pass
-                    self._cached_conn = None
-            conn = self._connect()
-            self._cached_conn = conn
-            return conn
+                    pass
+                self._cached_conn = None
+        conn = self._connect()
+        self._cached_conn = conn
+        return conn
 
     def _release_conn(self, conn: imaplib.IMAP4, *, discard: bool = False) -> None:
-        """Release a connection back to cache (or discard on error)."""
+        """Release a connection back to cache (or discard on error).
+
+        Caller MUST hold self._lock.
+        """
         if discard:
             try:
                 conn.logout()
             except Exception:
                 pass
-            with self._lock:
-                if self._cached_conn is conn:
-                    self._cached_conn = None
+            if self._cached_conn is conn:
+                self._cached_conn = None
         # Otherwise keep cached for reuse
 
     # -----------------------------------------------------------------------
@@ -282,105 +285,109 @@ class IMAPEmailProvider:
 
     def _list_folders_sync(self) -> list[dict[str, Any]]:
         """List all IMAP folders/mailboxes (blocking)."""
-        conn = self._get_conn()
-        try:
-            status, data = conn.list()
-            if status != "OK" or not data:
-                return []
-            folders: list[dict[str, Any]] = []
-            for item in data:
-                if item is None:
-                    continue
-                raw = item.decode() if isinstance(item, bytes) else str(item)
-                # IMAP LIST format: (\\Flags) "delimiter" "name"
-                match = re.match(
-                    r'\(([^)]*)\)\s+"([^"]+)"\s+"?([^"]+)"?', raw
-                )
-                if match:
-                    flags_str, delimiter, name = match.groups()
-                    flags = [f.strip() for f in flags_str.split() if f.strip()]
-                    folders.append({
-                        "name": name,
-                        "delimiter": delimiter,
-                        "flags": flags,
-                        "selectable": "\\Noselect" not in flags,
-                    })
-            return folders
-        except Exception:
-            self._release_conn(conn, discard=True)
-            raise
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                status, data = conn.list()
+                if status != "OK" or not data:
+                    return []
+                folders: list[dict[str, Any]] = []
+                for item in data:
+                    if item is None:
+                        continue
+                    raw = item.decode() if isinstance(item, bytes) else str(item)
+                    # IMAP LIST format: (\\Flags) "delimiter" "name"
+                    match = re.match(
+                        r'\(([^)]*)\)\s+"([^"]+)"\s+"?([^"]+)"?', raw
+                    )
+                    if match:
+                        flags_str, delimiter, name = match.groups()
+                        flags = [f.strip() for f in flags_str.split() if f.strip()]
+                        folders.append({
+                            "name": name,
+                            "delimiter": delimiter,
+                            "flags": flags,
+                            "selectable": "\\Noselect" not in flags,
+                        })
+                return folders
+            except Exception:
+                self._release_conn(conn, discard=True)
+                raise
 
     def _list_messages_sync(
         self, query: str, max_results: int, mailbox: str | None = None,
     ) -> list[dict[str, Any]]:
-        conn = self._get_conn()
-        target = mailbox or self._mailbox
-        try:
-            conn.select(f'"{target}"', readonly=True)
-            criteria = _imap_search_criteria(query)
-            status, data = conn.uid("search", None, criteria)  # type: ignore[arg-type]
-            if status != "OK" or not data or not data[0]:
-                return []
-            uids = data[0].decode().split()
-            # Most recent first
-            uids = list(reversed(uids))[:max_results]
-            if not uids:
-                return []
-            uid_set = ",".join(uids)
-            status, fetch_data = conn.uid("fetch", uid_set, "(RFC822.HEADER)")  # type: ignore[arg-type]
-            if status != "OK":
-                return []
-            messages: list[dict[str, Any]] = []
-            i = 0
-            while i < len(fetch_data):
-                item = fetch_data[i]
-                if isinstance(item, tuple) and len(item) >= 2:
-                    header_bytes = item[1]
-                    # Extract UID from the fetch response descriptor
-                    descriptor = item[0].decode() if isinstance(item[0], bytes) else str(item[0])
-                    uid_match = re.search(r"UID (\d+)", descriptor)
-                    uid = uid_match.group(1) if uid_match else str(i)
-                    messages.append(_parse_envelope(uid, header_bytes))
-                i += 1
-            return messages
-        except Exception:
-            self._release_conn(conn, discard=True)
-            raise
+        with self._lock:
+            conn = self._get_conn()
+            target = mailbox or self._mailbox
+            try:
+                conn.select(f'"{target}"', readonly=True)
+                criteria = _imap_search_criteria(query)
+                status, data = conn.uid("search", None, criteria)  # type: ignore[arg-type]
+                if status != "OK" or not data or not data[0]:
+                    return []
+                uids = data[0].decode().split()
+                # Most recent first
+                uids = list(reversed(uids))[:max_results]
+                if not uids:
+                    return []
+                uid_set = ",".join(uids)
+                status, fetch_data = conn.uid("fetch", uid_set, "(RFC822.HEADER)")  # type: ignore[arg-type]
+                if status != "OK":
+                    return []
+                messages: list[dict[str, Any]] = []
+                i = 0
+                while i < len(fetch_data):
+                    item = fetch_data[i]
+                    if isinstance(item, tuple) and len(item) >= 2:
+                        header_bytes = item[1]
+                        # Extract UID from the fetch response descriptor
+                        descriptor = item[0].decode() if isinstance(item[0], bytes) else str(item[0])
+                        uid_match = re.search(r"UID (\d+)", descriptor)
+                        uid = uid_match.group(1) if uid_match else str(i)
+                        messages.append(_parse_envelope(uid, header_bytes))
+                    i += 1
+                return messages
+            except Exception:
+                self._release_conn(conn, discard=True)
+                raise
 
     def _get_message_sync(self, uid: str, mailbox: str | None = None) -> dict[str, Any]:
-        conn = self._get_conn()
-        target = mailbox or self._mailbox
-        try:
-            conn.select(f'"{target}"', readonly=True)
-            status, data = conn.uid("fetch", uid, "(RFC822)")  # type: ignore[arg-type]
-            if status != "OK" or not data or not data[0]:
-                return {"error": f"Message {uid} not found"}
-            item = data[0]
-            if not isinstance(item, tuple) or len(item) < 2:
-                return {"error": "Unexpected fetch format"}
-            msg = _email_stdlib.message_from_bytes(item[1])
-            meta = _parse_envelope(uid, item[1])
-            meta["body_text"] = _extract_body(msg)
-            return meta
-        except Exception:
-            self._release_conn(conn, discard=True)
-            raise
+        with self._lock:
+            conn = self._get_conn()
+            target = mailbox or self._mailbox
+            try:
+                conn.select(f'"{target}"', readonly=True)
+                status, data = conn.uid("fetch", uid, "(RFC822)")  # type: ignore[arg-type]
+                if status != "OK" or not data or not data[0]:
+                    return {"error": f"Message {uid} not found"}
+                item = data[0]
+                if not isinstance(item, tuple) or len(item) < 2:
+                    return {"error": "Unexpected fetch format"}
+                msg = _email_stdlib.message_from_bytes(item[1])
+                meta = _parse_envelope(uid, item[1])
+                meta["body_text"] = _extract_body(msg)
+                return meta
+            except Exception:
+                self._release_conn(conn, discard=True)
+                raise
 
     def _get_message_metadata_sync(self, uid: str, mailbox: str | None = None) -> dict[str, Any]:
-        conn = self._get_conn()
-        target = mailbox or self._mailbox
-        try:
-            conn.select(f'"{target}"', readonly=True)
-            status, data = conn.uid("fetch", uid, "(RFC822.HEADER)")  # type: ignore[arg-type]
-            if status != "OK" or not data or not data[0]:
-                return {"error": f"Message {uid} not found"}
-            item = data[0]
-            if not isinstance(item, tuple) or len(item) < 2:
-                return {"error": "Unexpected fetch format"}
-            return _parse_envelope(uid, item[1])
-        except Exception:
-            self._release_conn(conn, discard=True)
-            raise
+        with self._lock:
+            conn = self._get_conn()
+            target = mailbox or self._mailbox
+            try:
+                conn.select(f'"{target}"', readonly=True)
+                status, data = conn.uid("fetch", uid, "(RFC822.HEADER)")  # type: ignore[arg-type]
+                if status != "OK" or not data or not data[0]:
+                    return {"error": f"Message {uid} not found"}
+                item = data[0]
+                if not isinstance(item, tuple) or len(item) < 2:
+                    return {"error": "Unexpected fetch format"}
+                return _parse_envelope(uid, item[1])
+            except Exception:
+                self._release_conn(conn, discard=True)
+                raise
 
     def _get_thread_sync(self, thread_id: str, mailbox: str | None = None) -> dict[str, Any]:
         """
@@ -390,45 +397,47 @@ class IMAPEmailProvider:
         For other servers: searches by References/Message-ID match using the
         thread_id as a message UID seed.
         """
-        conn = self._get_conn()
-        target = mailbox or self._mailbox
-        try:
-            conn.select(f'"{target}"', readonly=True)
+        with self._lock:
+            conn = self._get_conn()
+            target = mailbox or self._mailbox
+            try:
+                conn.select(f'"{target}"', readonly=True)
 
-            # Try Gmail's X-GM-THRID search first
-            if re.match(r"^\d+$", thread_id):
-                status, data = conn.uid(  # type: ignore[arg-type]
-                    "search", "X-GM-THRID", thread_id
-                )
-                if status == "OK" and data and data[0]:
-                    uids = data[0].decode().split()
-                    if uids:
-                        uid_set = ",".join(uids)
-                        status2, fetch_data = conn.uid("fetch", uid_set, "(RFC822.HEADER)")  # type: ignore[arg-type]
-                        messages: list[dict[str, Any]] = []
-                        if status2 == "OK":
-                            i = 0
-                            while i < len(fetch_data):
-                                item = fetch_data[i]
-                                if isinstance(item, tuple) and len(item) >= 2:
-                                    descriptor = item[0].decode() if isinstance(item[0], bytes) else str(item[0])
-                                    uid_match = re.search(r"UID (\d+)", descriptor)
-                                    uid = uid_match.group(1) if uid_match else str(i)
-                                    messages.append(_parse_envelope(uid, item[1]))
-                                i += 1
-                        return {"thread_id": thread_id, "messages": messages}
+                # Try Gmail's X-GM-THRID search first
+                if re.match(r"^\d+$", thread_id):
+                    status, data = conn.uid(  # type: ignore[arg-type]
+                        "search", "X-GM-THRID", thread_id
+                    )
+                    if status == "OK" and data and data[0]:
+                        uids = data[0].decode().split()
+                        if uids:
+                            uid_set = ",".join(uids)
+                            status2, fetch_data = conn.uid("fetch", uid_set, "(RFC822.HEADER)")  # type: ignore[arg-type]
+                            messages: list[dict[str, Any]] = []
+                            if status2 == "OK":
+                                i = 0
+                                while i < len(fetch_data):
+                                    item = fetch_data[i]
+                                    if isinstance(item, tuple) and len(item) >= 2:
+                                        descriptor = item[0].decode() if isinstance(item[0], bytes) else str(item[0])
+                                        uid_match = re.search(r"UID (\d+)", descriptor)
+                                        uid = uid_match.group(1) if uid_match else str(i)
+                                        messages.append(_parse_envelope(uid, item[1]))
+                                    i += 1
+                            return {"thread_id": thread_id, "messages": messages}
 
-            # Fallback: treat thread_id as a UID and expand via References
-            root = self._get_message_sync(thread_id)
-            return {"thread_id": thread_id, "messages": [root]}
-        except imaplib.IMAP4.error:
-            # X-GM-THRID not supported — fall back to single message
-            self._release_conn(conn, discard=True)
-            root = self._get_message_sync(thread_id)
-            return {"thread_id": thread_id, "messages": [root]}
-        except Exception:
-            self._release_conn(conn, discard=True)
-            raise
+                # Fallback: treat thread_id as a UID and expand via References
+                # _get_message_sync re-acquires self._lock (RLock allows re-entry)
+                root = self._get_message_sync(thread_id)
+                return {"thread_id": thread_id, "messages": [root]}
+            except imaplib.IMAP4.error:
+                # X-GM-THRID not supported — fall back to single message
+                self._release_conn(conn, discard=True)
+                root = self._get_message_sync(thread_id)
+                return {"thread_id": thread_id, "messages": [root]}
+            except Exception:
+                self._release_conn(conn, discard=True)
+                raise
 
     # -----------------------------------------------------------------------
     # Public async interface

@@ -240,7 +240,8 @@ class DatabaseCRMProvider:
         set_parts: list[str] = []
         params: list[Any] = [contact_id]
         for i, (key, val) in enumerate(updates.items(), start=2):
-            set_parts.append(f"{key} = ${i}")
+            cast = "::jsonb" if key == "metadata" else ""
+            set_parts.append(f"{key} = ${i}{cast}")
             params.append(val)
 
         row = await pool.fetchrow(

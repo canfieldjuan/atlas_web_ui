@@ -14,7 +14,9 @@ Twilio Concepts:
 
 import asyncio
 import logging
+import re as _re
 from typing import AsyncIterator, Optional
+from xml.sax.saxutils import escape as _xml_escape
 
 from ..core.protocols import (
     TelephonyProvider,
@@ -292,11 +294,9 @@ class TwilioProvider(TelephonyProvider):
 
         try:
             # Validate to_number to prevent TwiML injection
-            import re as _re
             if not _re.match(r'^[\d\+\-\(\)\s]+$', to_number):
                 logger.error("Invalid transfer number: %s", to_number)
                 return False
-            from xml.sax.saxutils import escape as _xml_escape
             safe_number = _xml_escape(to_number)
             transfer_twiml = f"""
             <Response>

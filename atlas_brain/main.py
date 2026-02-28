@@ -625,6 +625,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error("Error shutting down communications: %s", e)
 
+    # Close calendar provider httpx client
+    try:
+        from .services.calendar_provider import _provider_instance as _cal_provider
+        if _cal_provider is not None and hasattr(_cal_provider, 'aclose'):
+            await _cal_provider.aclose()
+    except Exception as e:
+        logger.error("Error closing calendar provider: %s", e)
+
     # Close database connection pool
     if db_settings.enabled:
         try:
