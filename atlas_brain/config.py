@@ -1923,6 +1923,20 @@ class ExternalDataConfig(BaseSettings):
     intelligence_max_tokens: int = Field(default=16384, description="Max tokens for intelligence LLM call")
     intelligence_journal_retention_days: int = Field(default=90, description="Days to retain reasoning journal entries")
     intelligence_news_retention_days: int = Field(default=30, description="Days to retain news articles")
+    intelligence_temperature: float = Field(default=0.4, description="LLM temperature for daily intelligence analysis")
+    # Intelligence reports (on-demand)
+    report_full_max_tokens: int = Field(default=1500, description="Max tokens for full intelligence reports")
+    report_executive_max_tokens: int = Field(default=500, description="Max tokens for executive summary reports")
+    report_builder_max_tokens: int = Field(default=2000, description="Max tokens for report package builder")
+    report_temperature: float = Field(default=0.3, description="LLM temperature for intelligence reports")
+    # Intervention pipeline
+    intervention_stage1_max_tokens: int = Field(default=1200, description="Max tokens for intervention stage 1 (playbook)")
+    intervention_stage2_max_tokens: int = Field(default=1500, description="Max tokens for intervention stage 2 (simulation)")
+    intervention_stage3_max_tokens: int = Field(default=1500, description="Max tokens for intervention stage 3 (narrative)")
+    intervention_temperature: float = Field(default=0.3, description="LLM temperature for intervention pipeline")
+    # Temporal correlation
+    temporal_correlation_window_hours: float = Field(default=4.0, description="Time window (hours) for article/market move correlation")
+    market_move_threshold_pct: float = Field(default=2.0, description="Min % price change to flag as abnormal market move")
     # API tuning
     news_max_keywords_per_query: int = Field(default=10, description="Max keywords per NewsAPI query")
     news_max_rss_feeds: int = Field(default=5, description="Max Google RSS feeds to poll per cycle")
@@ -1940,6 +1954,11 @@ class ExternalDataConfig(BaseSettings):
     pressure_baseline_window_days: int = Field(default=180, description="Rolling window for baseline (6 months)")
     pressure_alert_threshold: float = Field(default=7.0, description="Pressure score alert threshold (0-10)")
     pressure_drift_alert_threshold: float = Field(default=2.0, description="Sentiment drift alert threshold")
+    pressure_max_delta_per_day: float = Field(default=2.0, description="Max pressure score change per day without sensor support")
+    pressure_sensor_supported_delta: float = Field(default=5.0, description="Max pressure score change when sensor composite is HIGH/CRITICAL")
+    # Safety gate
+    safety_auto_approve_max_risk: str = Field(default="MEDIUM", description="Max risk level for auto-approval (LOW, MEDIUM, HIGH, CRITICAL)")
+    safety_approval_expiry_hours: int = Field(default=72, description="Hours before pending approval requests expire")
     # Complaint mining
     complaint_mining_enabled: bool = Field(default=False, description="Enable complaint mining pipeline")
     complaint_enrichment_interval_seconds: int = Field(default=300, description="Complaint enrichment polling interval (5 min)")
@@ -1967,6 +1986,14 @@ class ExternalDataConfig(BaseSettings):
     competitive_intelligence_cron: str = Field(default="30 21 * * *", description="Cron for competitive intelligence (default 9:30 PM)")
     competitive_intelligence_max_tokens: int = Field(default=16384, description="Max tokens for competitive intelligence LLM call")
     competitive_intelligence_min_deep_enriched: int = Field(default=100, description="Min deep-enriched reviews required to run")
+    # Buyer context enrichment (Pass 3 buyer psychology + Pass 4 extended context)
+    buyer_context_enrichment_enabled: bool = Field(default=True, description="Enable buyer context enrichment (Pass 3 + Pass 4)")
+    buyer_context_interval_seconds: int = Field(default=900, description="Buyer context enrichment polling interval (15 min)")
+    buyer_context_max_per_batch: int = Field(default=5, description="Max reviews to enrich per buyer context batch")
+    buyer_context_max_attempts: int = Field(default=3, description="Max attempts before marking Pass 3/4 failed")
+    buyer_context_max_tokens: int = Field(default=1024, description="Max LLM output tokens per buyer context extraction call")
+    buyer_context_vllm_model: str = Field(default="Qwen/Qwen3-14B", description="vLLM model for buyer context enrichment")
+    buyer_context_vllm_url: str = Field(default="http://localhost:8000", description="vLLM server URL for buyer context enrichment")
 
 
 class B2BChurnConfig(BaseSettings):

@@ -47,16 +47,24 @@ _COMPILED_PATTERNS = [
     (re.compile(pat, re.IGNORECASE), label) for pat, label in _PROHIBITED_PATTERNS
 ]
 
-# Risk level thresholds for auto-approval
-_AUTO_APPROVE_MAX_RISK = "MEDIUM"  # LOW and MEDIUM can auto-approve
 _RISK_ORDER = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 
-# Default approval expiry
-_APPROVAL_EXPIRY_HOURS = 72
+
+def _load_safety_config() -> tuple[str, int]:
+    """Load safety gate settings from config (deferred to avoid circular imports)."""
+    try:
+        from ..config import settings
+        cfg = settings.external_data
+        return cfg.safety_auto_approve_max_risk, cfg.safety_approval_expiry_hours
+    except Exception:
+        return "MEDIUM", 72
 
 
 class SafetyGate:
     """Central safety enforcement for the intervention pipeline."""
+
+    def __init__(self) -> None:
+        self._auto_approve_max_risk, self._approval_expiry_hours = _load_safety_config()
 
     # ---- Content Filtering ----
 
@@ -98,7 +106,7 @@ class SafetyGate:
         entity_name: str,
         requested_by: str,
         safety_checks: Optional[dict] = None,
-        expiry_hours: int = _APPROVAL_EXPIRY_HOURS,
+        expiry_hours: int | None = None,
     ) -> Optional[str]:
         """Create an approval request for a pipeline stage.
 
@@ -112,6 +120,8 @@ class SafetyGate:
             return None
 
         approval_id = str(uuid4())
+        if expiry_hours is None:
+            expiry_hours = self._approval_expiry_hours
         expires_at = datetime.now(timezone.utc) + timedelta(hours=expiry_hours)
 
         try:
@@ -380,7 +390,7 @@ class SafetyGate:
         else:
             level = "LOW"
 
-        auto_eligible = _RISK_ORDER.get(level, 0) <= _RISK_ORDER.get(_AUTO_APPROVE_MAX_RISK, 1)
+        auto_eligible = _RISK_ORDER.get(level, 0) <= _RISK_ORDER.get(self._auto_approve_max_risk, 1)
 
         return {
             "risk_level": level,

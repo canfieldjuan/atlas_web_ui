@@ -87,8 +87,12 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
     if total_data_points == 0 and not business_ctx and not prior_reasoning:
         return {"_skip_synthesis": "No data to analyze"}
 
-    # Pre-compute temporal correlations (article + market move within 4h window)
-    temporal_correlations = _compute_temporal_correlations(news_articles, market_data)
+    # Pre-compute temporal correlations (article + market move within configurable window)
+    temporal_correlations = _compute_temporal_correlations(
+        news_articles, market_data,
+        window_hours=cfg.temporal_correlation_window_hours,
+        move_threshold_pct=cfg.market_move_threshold_pct,
+    )
 
     # Build the user message payload
     payload = {
@@ -108,7 +112,7 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
 
     analysis = call_llm_with_skill(
         "digest/daily_intelligence", payload,
-        max_tokens=cfg.intelligence_max_tokens, temperature=0.4,
+        max_tokens=cfg.intelligence_max_tokens, temperature=cfg.intelligence_temperature,
     )
     if not analysis:
         return {"_skip_synthesis": "LLM analysis failed"}
@@ -154,7 +158,11 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
 
     # Upsert entity pressure baselines (with delta-clamping against prior)
     if cfg.pressure_enabled and pressure_readings:
-        await _upsert_pressure_baselines(pool, pressure_readings, pressure_baselines)
+        await _upsert_pressure_baselines(
+            pool, pressure_readings, pressure_baselines,
+            max_delta=cfg.pressure_max_delta_per_day,
+            sensor_delta=cfg.pressure_sensor_supported_delta,
+        )
 
     # Send ntfy notification
     from ...pipelines.notify import send_pipeline_notification
@@ -378,6 +386,7 @@ def _compute_temporal_correlations(
     articles: list[dict[str, Any]],
     market_data: list[dict[str, Any]],
     window_hours: float = 4.0,
+    move_threshold_pct: float = 2.0,
 ) -> list[dict[str, Any]]:
     """Find article/market pairs within a time window.
 
@@ -408,7 +417,7 @@ def _compute_temporal_correlations(
     mkt_moves: list[tuple[datetime, dict]] = []
     for m in market_data:
         change = m.get("change_pct")
-        if change is None or abs(float(change)) < 2.0:
+        if change is None or abs(float(change)) < move_threshold_pct:
             continue
         ts = m.get("snapshot_at")
         if not ts:
@@ -686,11 +695,13 @@ async def _upsert_pressure_baselines(
     pool,
     pressure_readings: list[dict[str, Any]],
     prior_baselines: list[dict[str, Any]] | None = None,
+    max_delta: float = 2.0,
+    sensor_delta: float = 5.0,
 ) -> None:
     """Upsert entity pressure baselines with delta-clamping.
 
     The LLM sees yesterday's score and tends to anchor to it, inheriting any
-    prior overestimate. Delta-clamping limits the per-day change to +/-2 points
+    prior overestimate. Delta-clamping limits the per-day change to +/-max_delta
     unless sensor composite risk (HIGH/CRITICAL) justifies a larger jump.
     """
     # Build lookup: (normalized_name, entity_type) -> prior_pressure_score
@@ -699,9 +710,6 @@ async def _upsert_pressure_baselines(
         key = (_normalize_entity_name(b.get("entity_name", "")), b.get("entity_type", "company"))
         if key[0]:
             prior_scores[key] = float(b.get("pressure_score", 0.0))
-
-    MAX_DELTA = 2.0  # max change per day without sensor support
-    SENSOR_SUPPORTED_DELTA = 5.0  # max change when HIGH/CRITICAL sensor composite
 
     now = datetime.now(timezone.utc)
     upserted = 0
@@ -724,7 +732,7 @@ async def _upsert_pressure_baselines(
             # Sensor composite from the reading's own sensor_analysis or note
             # HIGH/CRITICAL allows larger jumps (e.g., sudden crisis)
             sensor_level = str(reading.get("sensor_composite", "")).upper()
-            max_d = SENSOR_SUPPORTED_DELTA if sensor_level in ("HIGH", "CRITICAL") else MAX_DELTA
+            max_d = sensor_delta if sensor_level in ("HIGH", "CRITICAL") else max_delta
             if abs(delta) > max_d:
                 clamped_score = prior + max_d * (1.0 if delta > 0 else -1.0)
                 clamped_score = max(0.0, min(10.0, clamped_score))

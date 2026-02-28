@@ -116,12 +116,14 @@ async def generate_report(
         ]
 
     # Call LLM with skill
+    from ..config import settings
     from ..pipelines.llm import call_llm_with_skill
 
+    cfg = settings.external_data
     report_text = call_llm_with_skill(
         skill_name, payload,
-        max_tokens=1500 if report_type == "full" else 500,
-        temperature=0.3,
+        max_tokens=cfg.report_full_max_tokens if report_type == "full" else cfg.report_executive_max_tokens,
+        temperature=cfg.report_temperature,
     )
 
     if not report_text:
@@ -197,8 +199,10 @@ async def generate_report_package(
     This is a planning/scoping tool that defines what a premium
     report engagement would look like, not the report itself.
     """
+    from ..config import settings
     from ..pipelines.llm import call_llm_with_skill
 
+    cfg = settings.external_data
     payload = {
         "subject": entity_name,
         "client_profile": client_profile,
@@ -214,7 +218,7 @@ async def generate_report_package(
 
     text = call_llm_with_skill(
         "intelligence/report_builder", payload,
-        max_tokens=2000, temperature=0.3,
+        max_tokens=cfg.report_builder_max_tokens, temperature=cfg.report_temperature,
     )
 
     return {

@@ -116,11 +116,14 @@ async def run_intervention_pipeline(
         "evidence": evidence,
     }
 
+    from ..config import settings
     from ..pipelines.llm import call_llm_with_skill
+
+    cfg = settings.external_data
 
     playbook_text = call_llm_with_skill(
         "intelligence/adaptive_intervention", playbook_payload,
-        max_tokens=1200, temperature=0.3,
+        max_tokens=cfg.intervention_stage1_max_tokens, temperature=cfg.intervention_temperature,
     )
 
     if not playbook_text:
@@ -159,7 +162,7 @@ async def run_intervention_pipeline(
 
     simulation_text = call_llm_with_skill(
         "intelligence/simulated_evolution", simulation_payload,
-        max_tokens=1500, temperature=0.3,
+        max_tokens=cfg.intervention_stage2_max_tokens, temperature=cfg.intervention_temperature,
     )
 
     if not simulation_text:
@@ -247,7 +250,7 @@ async def run_intervention_pipeline(
 
             narrative_text = call_llm_with_skill(
                 "intelligence/autonomous_narrative_architect", narrative_payload,
-                max_tokens=1500, temperature=0.3,
+                max_tokens=cfg.intervention_stage3_max_tokens, temperature=cfg.intervention_temperature,
             )
 
             if narrative_text:
