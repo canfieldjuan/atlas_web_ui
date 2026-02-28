@@ -21,6 +21,20 @@ class GenerateReportRequest(BaseModel):
     audience: str = Field(default="executive", max_length=50)
 
 
+class RunInterventionRequest(BaseModel):
+    entity_name: str = Field(..., min_length=1, max_length=200)
+    entity_type: str = Field(default="company", max_length=50)
+    time_window_days: int = Field(default=7, ge=1, le=90)
+    objectives: list[str] = Field(default_factory=lambda: ["de-escalate", "stabilize"])
+    constraints: list[str] = Field(default_factory=list)
+    audience: str = Field(default="executive", max_length=50)
+    risk_tolerance: str = Field(default="moderate", pattern="^(low|moderate|high)$")
+    simulation_horizon: str = Field(default="7 days", max_length=50)
+    hours_before_event: int = Field(default=48, ge=1, le=720)
+    channels: list[str] = Field(default_factory=lambda: ["internal comms"])
+    allow_narrative_architect: bool = Field(default=False)
+
+
 @router.post("/report")
 async def generate_report(req: GenerateReportRequest):
     """Generate an intelligence report for an entity on demand."""
@@ -40,6 +54,36 @@ async def generate_report(req: GenerateReportRequest):
     )
 
     if "error" in result:
+        raise HTTPException(status_code=422, detail=result["error"])
+
+    return result
+
+
+@router.post("/intervention")
+async def run_intervention(req: RunInterventionRequest):
+    """Run the three-stage intervention pipeline for an entity."""
+    pool = get_db_pool()
+    if not pool.is_initialized:
+        raise HTTPException(status_code=503, detail="Database not available")
+
+    from ..services.intervention_pipeline import run_intervention_pipeline
+
+    result = await run_intervention_pipeline(
+        entity_name=req.entity_name,
+        entity_type=req.entity_type,
+        time_window_days=req.time_window_days,
+        objectives=req.objectives,
+        constraints=req.constraints,
+        audience=req.audience,
+        risk_tolerance=req.risk_tolerance,
+        simulation_horizon=req.simulation_horizon,
+        hours_before_event=req.hours_before_event,
+        channels=req.channels,
+        allow_narrative_architect=req.allow_narrative_architect,
+        requested_by="api",
+    )
+
+    if "error" in result and "stages" not in result:
         raise HTTPException(status_code=422, detail=result["error"])
 
     return result
