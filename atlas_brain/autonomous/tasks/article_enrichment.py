@@ -22,6 +22,8 @@ from ...storage.models import ScheduledTask
 
 logger = logging.getLogger("atlas.autonomous.tasks.article_enrichment")
 
+_VALID_PRESSURE_DIRECTIONS = frozenset({"building", "steady", "releasing", "unclear"})
+
 
 async def run(task: ScheduledTask) -> dict[str, Any]:
     """Autonomous task handler: enrich pending news articles."""
@@ -117,20 +119,26 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
                 )
 
                 if classification:
+                    soram = classification.get("soram_channels", {})
+                    ling = classification.get("linguistic_indicators", {})
+                    entities = classification.get("entities", [])
+                    direction = classification.get("pressure_direction")
                     await pool.execute(
                         """
                         UPDATE news_articles
-                        SET soram_channels = $1,
-                            linguistic_indicators = $2,
+                        SET soram_channels = $1::jsonb,
+                            linguistic_indicators = $2::jsonb,
                             entities_detected = $3,
+                            pressure_direction = $4,
                             enrichment_status = 'classified',
-                            enrichment_attempts = $4,
-                            enriched_at = $5
-                        WHERE id = $6
+                            enrichment_attempts = $5,
+                            enriched_at = $6
+                        WHERE id = $7
                         """,
-                        json.dumps(classification.get("soram_channels", {})),
-                        json.dumps(classification.get("linguistic_indicators", {})),
-                        classification.get("entities", []),
+                        json.dumps(soram),
+                        json.dumps(ling),
+                        entities,
+                        direction,
                         attempts + 1,
                         datetime.now(timezone.utc),
                         article_id,
@@ -222,7 +230,7 @@ async def _classify_soram(
     matched_keywords: list[str],
 ) -> dict[str, Any] | None:
     """Classify article via triage LLM using soram_classification skill."""
-    from ...pipelines.llm import call_llm_with_skill, clean_llm_output
+    from ...pipelines.llm import call_llm_with_skill, parse_json_response
 
     truncated = content[:3000] if content else ""
 
@@ -235,24 +243,60 @@ async def _classify_soram(
     text = call_llm_with_skill(
         "digest/soram_classification", payload,
         max_tokens=512, temperature=0.1,
-        prefer_cloud=True, try_openrouter=False, auto_activate_ollama=False,
+        prefer_cloud=True, try_openrouter=False, auto_activate_ollama=True,
     )
     if not text:
         return None
 
-    try:
-        cleaned = clean_llm_output(text)
-        parsed = json.loads(cleaned)
+    parsed = parse_json_response(text, recover_truncated=True)
 
-        if "soram_channels" not in parsed:
-            logger.debug("SORAM classification missing soram_channels field")
-            return None
-
-        return parsed
-
-    except json.JSONDecodeError:
-        logger.debug("Failed to parse SORAM classification JSON: %s", text[:200])
+    # parse_json_response always returns a dict; check for required field
+    if "soram_channels" not in parsed:
+        logger.debug("SORAM classification missing soram_channels: %s", text[:200])
         return None
-    except Exception:
-        logger.exception("SORAM classification failed")
-        return None
+
+    return _validate_classification(parsed)
+
+
+def _validate_classification(raw: dict[str, Any]) -> dict[str, Any]:
+    """Validate and clamp SORAM classification values from LLM output."""
+    # Validate soram_channels: each value must be float 0.0-1.0
+    soram = raw.get("soram_channels", {})
+    if isinstance(soram, dict):
+        validated_soram = {}
+        for key in ("societal", "operational", "regulatory", "alignment", "media"):
+            val = soram.get(key, 0.0)
+            try:
+                validated_soram[key] = max(0.0, min(1.0, float(val)))
+            except (TypeError, ValueError):
+                validated_soram[key] = 0.0
+        raw["soram_channels"] = validated_soram
+    else:
+        raw["soram_channels"] = {k: 0.0 for k in ("societal", "operational", "regulatory", "alignment", "media")}
+
+    # Validate linguistic_indicators: each value must be bool
+    ling = raw.get("linguistic_indicators", {})
+    if isinstance(ling, dict):
+        validated_ling = {}
+        for key in ("permission_shift", "certainty_spike", "linguistic_dissociation",
+                     "hedging_withdrawal", "urgency_escalation"):
+            validated_ling[key] = bool(ling.get(key, False))
+        raw["linguistic_indicators"] = validated_ling
+    else:
+        raw["linguistic_indicators"] = {k: False for k in (
+            "permission_shift", "certainty_spike", "linguistic_dissociation",
+            "hedging_withdrawal", "urgency_escalation")}
+
+    # Validate entities: list of non-empty strings
+    entities = raw.get("entities", [])
+    if isinstance(entities, list):
+        raw["entities"] = [str(e) for e in entities[:5] if e and str(e).strip()]
+    else:
+        raw["entities"] = []
+
+    # Validate pressure_direction
+    direction = raw.get("pressure_direction", "unclear")
+    if direction not in _VALID_PRESSURE_DIRECTIONS:
+        raw["pressure_direction"] = "unclear"
+
+    return raw

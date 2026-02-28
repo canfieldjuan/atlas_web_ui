@@ -206,7 +206,8 @@ async def _fetch_news_articles(pool, window_days: int) -> list[dict[str, Any]]:
         """
         SELECT title, source_name, url, published_at, summary,
                matched_keywords, is_market_related, created_at,
-               content, soram_channels, linguistic_indicators, entities_detected
+               content, soram_channels, linguistic_indicators,
+               entities_detected, pressure_direction
         FROM news_articles
         WHERE created_at > NOW() - make_interval(days => $1)
         ORDER BY created_at DESC
@@ -246,6 +247,8 @@ async def _fetch_news_articles(pool, window_days: int) -> list[dict[str, Any]]:
         entities = r["entities_detected"]
         if entities:
             article["entities_detected"] = list(entities)
+        if r.get("pressure_direction"):
+            article["pressure_direction"] = r["pressure_direction"]
         result.append(article)
     return result
 
