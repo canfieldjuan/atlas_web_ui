@@ -101,14 +101,15 @@ async def search_contacts(
     limit: max results (default 20)
     """
     if not any([query, phone, email, business_context_id]):
-        return json.dumps({"error": "At least one of query, phone, email, or business_context_id is required"})
+        return json.dumps({"error": "At least one of query, phone, email, or business_context_id is required",
+                           "found": False, "contacts": [], "count": 0})
     try:
         results = await _provider().search_contacts(
             query=query,
             phone=phone,
             email=email,
             business_context_id=business_context_id,
-            limit=limit,
+            limit=min(limit, 100),
         )
         if results:
             return json.dumps(
@@ -196,7 +197,7 @@ async def get_contact(contact_id: str) -> str:
         return json.dumps({"found": True, "contact": contact}, default=str)
     except Exception as exc:
         logger.exception("get_contact error")
-        return json.dumps({"error": str(exc), "found": False})
+        return json.dumps({"error": str(exc), "found": False, "contact": None})
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +275,9 @@ async def update_contact(
     Only supply fields you want to change.
     status: active | inactive | archived
     """
+    if not _is_uuid(contact_id):
+        return json.dumps({"success": False, "error": "Invalid contact_id (must be UUID)"})
+
     try:
         data = {
             k: v for k, v in {
@@ -313,6 +317,9 @@ async def delete_contact(contact_id: str) -> str:
     The record is marked status=archived rather than permanently removed so
     interaction history and appointment links are preserved.
     """
+    if not _is_uuid(contact_id):
+        return json.dumps({"success": False, "error": "Invalid contact_id (must be UUID)"})
+
     try:
         success = await _provider().delete_contact(contact_id)
         return json.dumps({"success": success})
@@ -345,13 +352,13 @@ async def list_contacts(
             business_context_id=business_context_id,
             status=status,
             contact_type=contact_type,
-            limit=limit,
+            limit=min(limit, 200),
             offset=offset,
         )
         return json.dumps({"contacts": contacts, "count": len(contacts)}, default=str)
     except Exception as exc:
         logger.exception("list_contacts error")
-        return json.dumps({"error": str(exc), "contacts": []})
+        return json.dumps({"error": str(exc), "contacts": [], "count": 0})
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +381,13 @@ async def log_interaction(
     Call this after every meaningful customer touch-point to build a
     longitudinal history that enriches GraphRAG and surfaces patterns.
     """
+    if not _is_uuid(contact_id):
+        return json.dumps({"success": False, "error": "Invalid contact_id (must be UUID)"})
+    if not summary or not summary.strip():
+        return json.dumps({"success": False, "error": "summary is required"})
+    if not interaction_type or not interaction_type.strip():
+        return json.dumps({"success": False, "error": "interaction_type is required"})
+
     try:
         interaction = await _provider().log_interaction(
             contact_id=contact_id,
@@ -399,14 +413,17 @@ async def get_interactions(contact_id: str, limit: int = 20) -> str:
     Returns calls, emails, appointments, and notes — most recent first.
     This is the longitudinal view of the customer relationship.
     """
+    if not _is_uuid(contact_id):
+        return json.dumps({"error": "Invalid contact_id (must be UUID)", "interactions": [], "count": 0})
+
     try:
-        interactions = await _provider().get_interactions(contact_id, limit=limit)
+        interactions = await _provider().get_interactions(contact_id, limit=min(limit, 100))
         return json.dumps(
             {"interactions": interactions, "count": len(interactions)}, default=str
         )
     except Exception as exc:
         logger.exception("get_interactions error")
-        return json.dumps({"error": str(exc), "interactions": []})
+        return json.dumps({"error": str(exc), "interactions": [], "count": 0})
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +439,9 @@ async def get_contact_appointments(contact_id: str) -> str:
     Legacy appointments (booked before the CRM existed) will not appear here
     until they are linked via the contact_id column.
     """
+    if not _is_uuid(contact_id):
+        return json.dumps({"error": "Invalid contact_id (must be UUID)", "appointments": [], "count": 0})
+
     try:
         appointments = await _provider().get_contact_appointments(contact_id)
         return json.dumps(
@@ -429,7 +449,7 @@ async def get_contact_appointments(contact_id: str) -> str:
         )
     except Exception as exc:
         logger.exception("get_contact_appointments error")
-        return json.dumps({"error": str(exc), "appointments": []})
+        return json.dumps({"error": str(exc), "appointments": [], "count": 0})
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +526,7 @@ async def get_customer_context(
             "call_transcripts": ctx.call_transcripts,
             "sent_emails": ctx.sent_emails,
             "inbox_emails": ctx.inbox_emails,
+            "b2b_churn_signals": ctx.b2b_churn_signals,
         }
 
         return json.dumps(result, default=str)

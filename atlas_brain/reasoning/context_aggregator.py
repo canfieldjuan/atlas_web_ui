@@ -38,6 +38,7 @@ async def aggregate_context(
         "recent_events": [],
         "market_data": [],
         "recent_news": [],
+        "b2b_churn": [],
     }
 
     if not entity_type or not entity_id:
@@ -56,16 +57,25 @@ async def aggregate_context(
                 logger.warning("External context aggregation timed out")
         return ctx
 
-    tasks = {
-        "crm": _fetch_crm(entity_id),
-        "emails": _fetch_emails(entity_id),
-        "voice": _fetch_voice(entity_id),
-        "calendar": _fetch_calendar(entity_id),
-        "sms": _fetch_sms(entity_id),
+    # Base tasks run for all entity types
+    tasks: dict[str, Any] = {
         "recent_events": _fetch_recent_events(entity_type, entity_id),
         "market_data": _fetch_market_context(),
         "recent_news": _fetch_news_context(),
     }
+
+    # Contact-specific fetchers require a UUID entity_id
+    if entity_type == "contact":
+        tasks.update({
+            "crm": _fetch_crm(entity_id),
+            "emails": _fetch_emails(entity_id),
+            "voice": _fetch_voice(entity_id),
+            "calendar": _fetch_calendar(entity_id),
+            "sms": _fetch_sms(entity_id),
+            "b2b_churn": _fetch_b2b_churn(entity_type, entity_id),
+        })
+    elif entity_type == "company":
+        tasks["b2b_churn"] = _fetch_b2b_churn(entity_type, entity_id)
 
     try:
         results = await asyncio.wait_for(
@@ -290,4 +300,60 @@ async def _fetch_news_context() -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
     except Exception:
         logger.debug("News context fetch failed", exc_info=True)
+        return []
+
+
+async def _fetch_b2b_churn(
+    entity_type: str, entity_id: str,
+) -> list[dict[str, Any]]:
+    """Fetch B2B churn signals for an entity.
+
+    For entity_type="contact": resolves UUID -> email -> domain -> company hint.
+    For entity_type="company": uses entity_id directly as company hint.
+    """
+    from ..storage.database import get_db_pool
+
+    pool = get_db_pool()
+    if not pool.is_initialized:
+        return []
+
+    try:
+        if entity_type == "company":
+            company_hint = entity_id
+        else:
+            # Resolve contact UUID -> email -> domain -> company hint
+            email = await pool.fetchval(
+                "SELECT email FROM contacts WHERE id = $1",
+                entity_id,
+            )
+            if not email or "@" not in email:
+                return []
+
+            domain = email.rsplit("@", 1)[1].lower()
+            from ..services.customer_context import _FREE_EMAIL_DOMAINS
+            if domain in _FREE_EMAIL_DOMAINS:
+                return []
+
+            company_hint = domain.split(".")[0]
+            if not company_hint:
+                return []
+
+        rows = await pool.fetch(
+            """
+            SELECT vendor_name, product_category, avg_urgency_score,
+                   top_pain_categories, top_competitors,
+                   decision_maker_churn_rate, price_complaint_rate
+            FROM b2b_churn_signals
+            WHERE EXISTS (
+                SELECT 1 FROM jsonb_array_elements(company_churn_list) AS c
+                WHERE c->>'company' ILIKE '%' || $1 || '%'
+            )
+            ORDER BY avg_urgency_score DESC
+            LIMIT 5
+            """,
+            company_hint,
+        )
+        return [dict(r) for r in rows]
+    except Exception:
+        logger.debug("B2B churn context fetch failed", exc_info=True)
         return []

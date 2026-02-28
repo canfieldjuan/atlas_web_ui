@@ -1980,20 +1980,12 @@ class ExternalDataConfig(BaseSettings):
     deep_enrichment_interval_seconds: int = Field(default=600, description="Deep enrichment polling interval (10 min)")
     deep_enrichment_max_per_batch: int = Field(default=5, description="Max reviews to deep-enrich per autonomous batch")
     deep_enrichment_max_attempts: int = Field(default=3, description="Max attempts before marking deep_failed")
-    deep_enrichment_max_tokens: int = Field(default=1024, description="Max LLM output tokens for deep extraction")
+    deep_enrichment_max_tokens: int = Field(default=2048, description="Max LLM output tokens for deep extraction (32 fields)")
     # Competitive intelligence (cross-brand analysis from deep_extraction)
     competitive_intelligence_enabled: bool = Field(default=True, description="Enable competitive intelligence analysis")
     competitive_intelligence_cron: str = Field(default="30 21 * * *", description="Cron for competitive intelligence (default 9:30 PM)")
     competitive_intelligence_max_tokens: int = Field(default=16384, description="Max tokens for competitive intelligence LLM call")
     competitive_intelligence_min_deep_enriched: int = Field(default=100, description="Min deep-enriched reviews required to run")
-    # Buyer context enrichment (Pass 3 buyer psychology + Pass 4 extended context)
-    buyer_context_enrichment_enabled: bool = Field(default=True, description="Enable buyer context enrichment (Pass 3 + Pass 4)")
-    buyer_context_interval_seconds: int = Field(default=900, description="Buyer context enrichment polling interval (15 min)")
-    buyer_context_max_per_batch: int = Field(default=5, description="Max reviews to enrich per buyer context batch")
-    buyer_context_max_attempts: int = Field(default=3, description="Max attempts before marking Pass 3/4 failed")
-    buyer_context_max_tokens: int = Field(default=1024, description="Max LLM output tokens per buyer context extraction call")
-    buyer_context_vllm_model: str = Field(default="Qwen/Qwen3-14B", description="vLLM model for buyer context enrichment")
-    buyer_context_vllm_url: str = Field(default="http://localhost:8000", description="vLLM server URL for buyer context enrichment")
 
 
 class B2BChurnConfig(BaseSettings):
@@ -2022,6 +2014,12 @@ class B2BChurnConfig(BaseSettings):
     # Churn thresholds
     high_churn_urgency_threshold: int = Field(default=7, description="Urgency score >= this = high churn risk")
     enterprise_only: bool = Field(default=False, description="Only include enterprise-segment reviews")
+
+    # Customer context enrichment
+    context_enrichment_enabled: bool = Field(
+        default=True,
+        description="Include B2B churn signals in customer context lookups",
+    )
 
 
 class B2BScrapeConfig(BaseSettings):

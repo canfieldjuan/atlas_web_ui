@@ -13,11 +13,18 @@ Usage:
 """
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 logger = logging.getLogger("atlas.services.customer_context")
+
+_FREE_EMAIL_DOMAINS = frozenset({
+    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "aol.com",
+    "icloud.com", "mail.com", "protonmail.com", "zoho.com", "yandex.com",
+    "gmx.com", "live.com",
+})
 
 
 @dataclass
@@ -32,6 +39,7 @@ class CustomerContext:
     inbox_emails: list[dict[str, Any]] = field(default_factory=list)
     sms_messages: list[dict[str, Any]] = field(default_factory=list)
     invoices: list[dict[str, Any]] = field(default_factory=list)
+    b2b_churn_signals: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def contact_id(self) -> Optional[str]:
@@ -164,10 +172,14 @@ class CustomerContextService:
             inv_repo.get_by_contact_id(contact_id, limit=max_invoices),
             "invoices",
         )
+        b2b_coro = _safe(
+            self._get_b2b_churn_signals(contact),
+            "b2b_churn_signals",
+        )
 
-        interactions, appointments, calls, emails, inbox, sms, invoices = await asyncio.gather(
+        interactions, appointments, calls, emails, inbox, sms, invoices, b2b = await asyncio.gather(
             interactions_coro, appointments_coro, calls_coro,
-            emails_coro, inbox_coro, sms_coro, invoices_coro,
+            emails_coro, inbox_coro, sms_coro, invoices_coro, b2b_coro,
         )
 
         return CustomerContext(
@@ -179,7 +191,71 @@ class CustomerContextService:
             inbox_emails=inbox,
             sms_messages=sms,
             invoices=invoices,
+            b2b_churn_signals=b2b,
         )
+
+    async def _get_b2b_churn_signals(self, contact: dict) -> list[dict[str, Any]]:
+        """Look up B2B churn signals for the contact's company domain.
+
+        Extracts the email domain, skips free providers, derives a company
+        hint, and queries b2b_churn_signals.company_churn_list JSONB.
+        Gated by settings.b2b_churn.context_enrichment_enabled.
+        """
+        from ..config import settings
+
+        if not settings.b2b_churn.context_enrichment_enabled:
+            return []
+
+        email_addr = contact.get("email")
+        if not email_addr or "@" not in email_addr:
+            return []
+
+        domain = email_addr.rsplit("@", 1)[1].lower()
+        if domain in _FREE_EMAIL_DOMAINS:
+            return []
+
+        # Derive company hint: strip TLD  ("acme.co.uk" -> "acme")
+        company_hint = domain.split(".")[0]
+        if not company_hint:
+            return []
+
+        from ..storage.database import get_db_pool
+
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            return []
+
+        try:
+            rows = await pool.fetch(
+                """
+                SELECT vendor_name, product_category, avg_urgency_score,
+                       top_pain_categories, top_competitors,
+                       decision_maker_churn_rate, price_complaint_rate
+                FROM b2b_churn_signals
+                WHERE EXISTS (
+                    SELECT 1 FROM jsonb_array_elements(company_churn_list) AS c
+                    WHERE c->>'company' ILIKE '%' || $1 || '%'
+                )
+                ORDER BY avg_urgency_score DESC
+                LIMIT 5
+                """,
+                company_hint,
+            )
+            results = []
+            for r in rows:
+                results.append({
+                    "vendor_name": r["vendor_name"],
+                    "product_category": r["product_category"],
+                    "avg_urgency_score": float(r["avg_urgency_score"]) if r["avg_urgency_score"] else 0,
+                    "top_pain_categories": json.loads(r["top_pain_categories"]) if isinstance(r["top_pain_categories"], str) else (r["top_pain_categories"] or []),
+                    "top_competitors": json.loads(r["top_competitors"]) if isinstance(r["top_competitors"], str) else (r["top_competitors"] or []),
+                    "decision_maker_churn_rate": float(r["decision_maker_churn_rate"]) if r["decision_maker_churn_rate"] else None,
+                    "price_complaint_rate": float(r["price_complaint_rate"]) if r["price_complaint_rate"] else None,
+                })
+            return results
+        except Exception as e:
+            logger.debug("B2B churn signal lookup failed: %s", e)
+            return []
 
     async def _get_sent_emails(
         self, contact: dict, limit: int,

@@ -109,6 +109,27 @@ def _format_customer_context(ctx: CustomerContext) -> str:
                 f"  - {inv.get('invoice_number', '?')} | ${inv.get('total_amount', 0):.2f} | {inv.get('status', '?')} | {inv_date}"
             )
 
+    # B2B competitive intelligence
+    if ctx.b2b_churn_signals:
+        parts.append(f"\nB2B Competitive Intelligence ({len(ctx.b2b_churn_signals)} vendor{'s' if len(ctx.b2b_churn_signals) != 1 else ''}):")
+        for sig in ctx.b2b_churn_signals:
+            vendor = sig.get("vendor_name", "Unknown")
+            category = sig.get("product_category", "")
+            urgency = sig.get("avg_urgency_score", 0)
+            pains = sig.get("top_pain_categories", [])
+            top_pain = pains[0].get("category", "") if pains else ""
+            competitors = sig.get("top_competitors", [])
+            top_threat = competitors[0].get("name", "") if competitors else ""
+            line = f"  - {vendor}"
+            if category:
+                line += f" ({category})"
+            line += f": urgency {urgency:.1f}/10"
+            if top_pain:
+                line += f", pain: {top_pain}"
+            if top_threat:
+                line += f", top threat: {top_threat}"
+            parts.append(line)
+
     return "\n".join(parts)
 
 

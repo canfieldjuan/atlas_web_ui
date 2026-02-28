@@ -47,6 +47,10 @@ class EventType:
     MARKET_SIGNIFICANT_MOVE = "market.significant_move"
     MARKET_ALERT = "market.alert"
 
+    # B2B Churn Intelligence
+    B2B_INTELLIGENCE_GENERATED = "b2b.intelligence_generated"
+    B2B_HIGH_INTENT_DETECTED = "b2b.high_intent_detected"
+
 
 @dataclass
 class AtlasEvent:

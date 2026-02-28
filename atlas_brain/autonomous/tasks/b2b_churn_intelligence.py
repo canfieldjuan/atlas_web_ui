@@ -183,6 +183,9 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
     # Send ntfy notification
     await _send_notification(task, parsed, high_intent)
 
+    # Emit reasoning events (no-op when reasoning disabled)
+    await _emit_reasoning_events(parsed, high_intent, vendor_scores)
+
     return {
         "_skip_synthesis": "B2B churn intelligence complete",
         "date": str(today),
@@ -191,6 +194,48 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         "competitive_flows": len(competitive_disp),
         "report_types": len(report_types),
     }
+
+
+# ------------------------------------------------------------------
+# Reasoning events
+# ------------------------------------------------------------------
+
+
+async def _emit_reasoning_events(
+    parsed: dict[str, Any],
+    high_intent: list[dict[str, Any]],
+    vendor_scores: list[dict[str, Any]],
+) -> None:
+    """Emit B2B events for the reasoning agent (no-op when disabled)."""
+    from ...reasoning.producers import emit_if_enabled
+    from ...reasoning.events import EventType
+
+    # One report-level event per run
+    await emit_if_enabled(
+        EventType.B2B_INTELLIGENCE_GENERATED,
+        source="b2b_churn_intelligence",
+        payload={
+            "vendors_analyzed": len(vendor_scores),
+            "high_intent_count": len(high_intent),
+            "executive_summary": parsed.get("executive_summary", ""),
+        },
+    )
+
+    # One event per high-intent company (cap at 10)
+    for company in high_intent[:10]:
+        await emit_if_enabled(
+            EventType.B2B_HIGH_INTENT_DETECTED,
+            source="b2b_churn_intelligence",
+            payload={
+                "company": company.get("company", ""),
+                "vendor": company.get("vendor", ""),
+                "urgency": company.get("urgency", 0),
+                "pain": company.get("pain", ""),
+                "alternatives": company.get("alternatives", []),
+            },
+            entity_type="company",
+            entity_id=company.get("company", ""),
+        )
 
 
 # ------------------------------------------------------------------
