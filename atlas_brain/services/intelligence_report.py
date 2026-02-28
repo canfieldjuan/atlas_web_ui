@@ -787,6 +787,9 @@ def _sensor_confidence_from_soram(soram: dict, cross: dict) -> str:
 
     Sensors are context-blind term counters. SORAM is LLM-driven and
     understands whether adversarial language is direct or quoted.
+
+    NOTE: Parallel implementation of _sensor_confidence() in
+    autonomous/tasks/daily_intelligence.py. Keep thresholds in sync.
     """
     if not soram or cross.get("sensor_count", 0) == 0:
         return "low"

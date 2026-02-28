@@ -324,6 +324,9 @@ def _sensor_confidence(soram: dict, cross: dict) -> str:
     in neutral coverage -- downgrade confidence.
 
     Returns: "high", "medium", or "low"
+
+    NOTE: Parallel implementation exists in services/intelligence_report.py
+    as _sensor_confidence_from_soram(). Keep thresholds in sync.
     """
     if not soram or cross.get("sensor_count", 0) == 0:
         return "low"

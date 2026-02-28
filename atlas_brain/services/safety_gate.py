@@ -250,7 +250,8 @@ class SafetyGate:
                 notes,
             )
 
-            updated = result.endswith("1") if isinstance(result, str) else False
+            # asyncpg execute() returns "UPDATE N" where N is the row count
+            updated = result == "UPDATE 1" if isinstance(result, str) else False
 
             if updated:
                 # Fetch entity_name for audit log
