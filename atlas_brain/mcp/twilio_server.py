@@ -568,7 +568,7 @@ async def send_sms(
 
         # Persist outbound SMS (fail-open)
         try:
-            from atlas_brain.storage.repositories.sms_message import get_sms_message_repo
+            from ..storage.repositories.sms_message import get_sms_message_repo
             sms_repo = get_sms_message_repo()
             await sms_repo.create(
                 message_sid=msg.sid,

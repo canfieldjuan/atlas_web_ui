@@ -397,11 +397,11 @@ async def search_inbox(
             query=query, max_results=min(max_results, 100), mailbox=mailbox,
         )
         return json.dumps(
-            {"results": messages, "total_matched": len(messages)}, default=str
+            {"messages": messages, "count": len(messages)}, default=str
         )
     except Exception as exc:
         logger.exception("search_inbox error")
-        return json.dumps({"error": str(exc), "results": []})
+        return json.dumps({"error": str(exc), "messages": []})
 
 
 # ---------------------------------------------------------------------------

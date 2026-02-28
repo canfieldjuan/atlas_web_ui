@@ -615,14 +615,7 @@ async def list_services(
         else:
             services = await repo.list_active()
             if status and status != "active":
-                # list_active only returns active; for other statuses do a filtered query
-                from ..storage.database import get_db_pool
-                pool = get_db_pool()
-                rows = await pool.fetch(
-                    "SELECT * FROM customer_services WHERE status = $1 ORDER BY created_at",
-                    status,
-                )
-                services = [repo._row_to_dict(row) for row in rows]
+                services = await repo.list_by_status(status)
 
         return json.dumps({"services": services, "count": len(services)}, default=str)
     except Exception as exc:

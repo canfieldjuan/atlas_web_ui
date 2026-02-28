@@ -155,6 +155,27 @@ class CustomerServiceRepository:
         except Exception as e:
             raise DatabaseOperationError("list active services", e)
 
+    async def list_by_status(self, status: str) -> list[dict]:
+        """List service agreements filtered by status."""
+        pool = get_db_pool()
+        if not pool.is_initialized:
+            raise DatabaseUnavailableError("list services by status")
+
+        try:
+            rows = await pool.fetch(
+                """
+                SELECT * FROM customer_services
+                WHERE status = $1
+                ORDER BY created_at
+                """,
+                status,
+            )
+            return [self._row_to_dict(row) for row in rows]
+        except DatabaseUnavailableError:
+            raise
+        except Exception as e:
+            raise DatabaseOperationError("list services by status", e)
+
     async def update(self, service_id: UUID, **fields) -> Optional[dict]:
         """Update a service agreement. Only active/paused services can be edited."""
         pool = get_db_pool()
