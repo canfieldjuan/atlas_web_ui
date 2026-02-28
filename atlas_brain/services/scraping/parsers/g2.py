@@ -213,7 +213,11 @@ def _parse_review_card(card, target: ScrapeTarget) -> dict | None:
         "company_size_raw": company_size,
         "reviewer_industry": reviewer_industry,
         "reviewed_at": reviewed_at,
-        "raw_metadata": {},
+        "raw_metadata": {
+            "extraction_method": "html",
+            "source_weight": 1.0,
+            "source_type": "verified_review_platform",
+        },
     }
 
 

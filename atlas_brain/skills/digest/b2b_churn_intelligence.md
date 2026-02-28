@@ -20,7 +20,7 @@ You receive 5 data sets:
 4. **pain_distribution**: What complaint categories drive churn per vendor
 5. **feature_gaps**: Most-mentioned missing features per vendor
 
-Plus optional **prior_reports**: Previous intelligence reports for trend comparison.
+Plus optional **prior_reports**: Previous intelligence reports for trend comparison. Each prior report now includes `intelligence_data` with full scorecard numbers (churn_rate_pct, avg_urgency, nps_proxy per vendor). Use these numbers for data-driven trend computation -- do not guess trends from prose summaries.
 
 ## Output Schema
 
@@ -94,7 +94,12 @@ Plus optional **prior_reports**: Previous intelligence reports for trend compari
 ### vendor_scorecards
 - churn_rate_pct = (churn_intent_count / total_reviews) * 100
 - nps_proxy = ((recommend_yes - recommend_no) / total_reviews) * 100
-- trend: compare with prior_reports if available; otherwise "new"
+- trend: compute from prior_reports `intelligence_data` using these rules:
+  - **worsening**: churn_rate_pct increased >5 percentage points OR avg_urgency increased >1.0 vs prior
+  - **improving**: churn_rate_pct decreased >5 percentage points OR avg_urgency decreased >1.0 vs prior
+  - **stable**: both metrics within thresholds (<=5pp churn change AND <=1.0 urgency change)
+  - **new**: no prior data for this vendor
+  - Tiebreaker: when churn_rate_pct and avg_urgency disagree, churn_rate_pct wins
 
 ### displacement_map
 - signal_strength: "strong" (5+ mentions), "moderate" (3-4), "emerging" (2)

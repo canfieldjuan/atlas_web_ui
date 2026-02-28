@@ -145,6 +145,9 @@ class RedditParser:
                         "reviewer_industry": None,
                         "reviewed_at": reviewed_at,
                         "raw_metadata": {
+                            "extraction_method": "api_json",
+                            "source_weight": 0.5,
+                            "source_type": "community_discussion",
                             "subreddit": post.get("subreddit", sub),
                             "score": post.get("score", 0),
                             "num_comments": post.get("num_comments", 0),

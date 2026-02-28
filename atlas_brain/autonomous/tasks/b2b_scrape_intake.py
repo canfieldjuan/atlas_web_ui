@@ -203,6 +203,32 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         if result.reviews:
             inserted = await _insert_reviews(pool, result.reviews, batch_id)
 
+            # Mark synthetic aggregate reviews as not_applicable for enrichment
+            synthetic_keys = [
+                _make_dedup_key(
+                    r["source"], r["vendor_name"],
+                    r.get("source_review_id"),
+                    r.get("reviewer_name"),
+                    r.get("reviewed_at"),
+                )
+                for r in result.reviews
+                if r.get("raw_metadata", {}).get("extraction_method") == "jsonld_aggregate"
+            ]
+            if synthetic_keys:
+                await pool.execute(
+                    """
+                    UPDATE b2b_reviews
+                    SET enrichment_status = 'not_applicable'
+                    WHERE dedup_key = ANY($1::text[])
+                      AND enrichment_status = 'pending'
+                    """,
+                    synthetic_keys,
+                )
+                logger.info(
+                    "Marked %d synthetic aggregate reviews as not_applicable",
+                    len(synthetic_keys),
+                )
+
         duration_ms = int((time.monotonic() - started_at) * 1000)
         total_reviews += len(result.reviews)
         total_inserted += inserted

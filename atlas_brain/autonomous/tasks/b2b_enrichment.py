@@ -38,6 +38,7 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
     rows = await pool.fetch(
         """
         SELECT id, vendor_name, product_name, product_category,
+               source, raw_metadata,
                rating, rating_max, summary, review_text, pros, cons,
                reviewer_title, reviewer_company, company_size_raw,
                reviewer_industry, enrichment_attempts
@@ -117,6 +118,18 @@ async def _enrich_single(pool, row, max_attempts: int, local_only: bool,
         return False
 
 
+def _smart_truncate(text: str, max_len: int = 3000) -> str:
+    """Truncate preserving both beginning and end of review text.
+
+    Churn signals often appear at the end ("I'm switching to X next quarter"),
+    so naive head-only truncation loses them.
+    """
+    if len(text) <= max_len:
+        return text
+    half = max_len // 2 - 15
+    return text[:half] + "\n[...truncated...]\n" + text[-half:]
+
+
 def _classify_review(row, local_only: bool, max_tokens: int) -> dict[str, Any] | None:
     """Call LLM with b2b_churn_extraction skill."""
     from ...skills import get_skill_registry
@@ -137,11 +150,23 @@ def _classify_review(row, local_only: bool, max_tokens: int) -> dict[str, Any] |
         logger.warning("No LLM available for B2B churn extraction")
         return None
 
-    review_text = (row["review_text"] or "")[:3000]
+    review_text = _smart_truncate(row["review_text"] or "")
+
+    # Extract source context from raw_metadata
+    raw_meta = row.get("raw_metadata") or {}
+    if isinstance(raw_meta, str):
+        try:
+            raw_meta = json.loads(raw_meta)
+        except (json.JSONDecodeError, TypeError):
+            raw_meta = {}
+
     payload = {
         "vendor_name": row["vendor_name"],
         "product_name": row["product_name"] or "",
         "product_category": row["product_category"] or "",
+        "source_name": row.get("source") or "",
+        "source_weight": raw_meta.get("source_weight", 0.7),
+        "source_type": raw_meta.get("source_type", "unknown"),
         "rating": float(row["rating"]) if row["rating"] is not None else None,
         "rating_max": int(row["rating_max"]),
         "summary": row["summary"] or "",
@@ -177,14 +202,59 @@ def _classify_review(row, local_only: bool, max_tokens: int) -> dict[str, Any] |
         return None
 
 
+_KNOWN_PAIN_CATEGORIES = {
+    "pricing", "features", "reliability", "support", "integration",
+    "performance", "security", "ux", "onboarding", "other",
+}
+
+
 def _validate_enrichment(result: dict) -> bool:
-    """Basic validation of enrichment output structure."""
+    """Validate enrichment output structure and data consistency."""
     if "churn_signals" not in result:
         return False
     if "urgency_score" not in result:
         return False
     if not isinstance(result.get("churn_signals"), dict):
         return False
+
+    # Type check: urgency_score must be numeric
+    urgency = result.get("urgency_score")
+    if isinstance(urgency, str):
+        try:
+            urgency = float(urgency)
+            result["urgency_score"] = urgency
+        except (ValueError, TypeError):
+            logger.warning("urgency_score is non-numeric string: %r", urgency)
+            return False
+
+    if not isinstance(urgency, (int, float)):
+        logger.warning("urgency_score has unexpected type: %s", type(urgency).__name__)
+        return False
+
+    # Range check: 0-10
+    if urgency < 0 or urgency > 10:
+        logger.warning("urgency_score out of range [0,10]: %s", urgency)
+        return False
+
+    # Consistency warning: high urgency with no intent_to_leave
+    intent = result.get("churn_signals", {}).get("intent_to_leave")
+    if urgency >= 9 and intent is False:
+        logger.warning(
+            "Contradictory: urgency=%s but intent_to_leave=false -- accepting with warning",
+            urgency,
+        )
+
+    # Type check: competitors_mentioned must be list if present
+    competitors = result.get("competitors_mentioned")
+    if competitors is not None and not isinstance(competitors, list):
+        logger.warning("competitors_mentioned is not a list: %s", type(competitors).__name__)
+        result["competitors_mentioned"] = []
+
+    # Warn on unknown pain_category
+    pain = result.get("pain_category")
+    if pain and pain not in _KNOWN_PAIN_CATEGORIES:
+        logger.warning("Unknown pain_category: %r (accepting)", pain)
+
     return True
 
 

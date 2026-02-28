@@ -41,35 +41,43 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
     urgency_threshold = cfg.high_churn_urgency_threshold
     today = date.today()
 
-    # Gather all 5 data sources in parallel
+    # Gather all 10 data sources in parallel
     (
         vendor_scores, high_intent, competitive_disp,
         pain_dist, feature_gaps,
+        negative_counts, price_rates, dm_rates,
+        churning_companies, quotable_evidence,
     ) = await asyncio.gather(
         _fetch_vendor_churn_scores(pool, window_days, min_reviews),
         _fetch_high_intent_companies(pool, urgency_threshold, window_days),
         _fetch_competitive_displacement(pool, window_days),
         _fetch_pain_distribution(pool, window_days),
         _fetch_feature_gaps(pool, window_days),
+        _fetch_negative_review_counts(pool, window_days),
+        _fetch_price_complaint_rates(pool, window_days),
+        _fetch_dm_churn_rates(pool, window_days),
+        _fetch_churning_companies(pool, window_days),
+        _fetch_quotable_evidence(pool, window_days),
         return_exceptions=True,
     )
 
     # Convert exceptions to empty values
-    if isinstance(vendor_scores, Exception):
-        logger.warning("Vendor scores fetch failed: %s", vendor_scores)
-        vendor_scores = []
-    if isinstance(high_intent, Exception):
-        logger.warning("High intent fetch failed: %s", high_intent)
-        high_intent = []
-    if isinstance(competitive_disp, Exception):
-        logger.warning("Competitive displacement fetch failed: %s", competitive_disp)
-        competitive_disp = []
-    if isinstance(pain_dist, Exception):
-        logger.warning("Pain distribution fetch failed: %s", pain_dist)
-        pain_dist = []
-    if isinstance(feature_gaps, Exception):
-        logger.warning("Feature gaps fetch failed: %s", feature_gaps)
-        feature_gaps = []
+    def _safe(val: Any, name: str) -> list:
+        if isinstance(val, Exception):
+            logger.warning("%s fetch failed: %s", name, val)
+            return []
+        return val
+
+    vendor_scores = _safe(vendor_scores, "vendor_scores")
+    high_intent = _safe(high_intent, "high_intent")
+    competitive_disp = _safe(competitive_disp, "competitive_disp")
+    pain_dist = _safe(pain_dist, "pain_dist")
+    feature_gaps = _safe(feature_gaps, "feature_gaps")
+    negative_counts = _safe(negative_counts, "negative_counts")
+    price_rates = _safe(price_rates, "price_rates")
+    dm_rates = _safe(dm_rates, "dm_rates")
+    churning_companies = _safe(churning_companies, "churning_companies")
+    quotable_evidence = _safe(quotable_evidence, "quotable_evidence")
 
     # Check if there's enough data
     if not vendor_scores and not high_intent:
@@ -136,8 +144,22 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         except Exception:
             logger.exception("Failed to store %s report", report_type)
 
+    # Build lookups for upsert
+    pain_lookup = _build_pain_lookup(pain_dist)
+    competitor_lookup = _build_competitor_lookup(competitive_disp)
+    feature_gap_lookup = _build_feature_gap_lookup(feature_gaps)
+    neg_lookup = {r["vendor"]: r["negative_count"] for r in negative_counts}
+    price_lookup = {r["vendor"]: r["price_complaint_rate"] for r in price_rates}
+    dm_lookup = {r["vendor"]: r["dm_churn_rate"] for r in dm_rates}
+    company_lookup = {r["vendor"]: r["companies"] for r in churning_companies}
+    quote_lookup = {r["vendor"]: r["quotes"] for r in quotable_evidence}
+
     # Upsert per-vendor churn signals
-    await _upsert_churn_signals(pool, vendor_scores, parsed)
+    await _upsert_churn_signals(
+        pool, vendor_scores,
+        neg_lookup, pain_lookup, competitor_lookup, feature_gap_lookup,
+        price_lookup, dm_lookup, company_lookup, quote_lookup,
+    )
 
     # Send ntfy notification
     await _send_notification(task, parsed, high_intent)
@@ -166,7 +188,13 @@ async def _fetch_vendor_churn_scores(pool, window_days: int, min_reviews: int) -
             count(*) FILTER (
                 WHERE (enrichment->'churn_signals'->>'intent_to_leave')::boolean = true
             ) AS churn_intent,
-            avg((enrichment->>'urgency_score')::numeric) AS avg_urgency,
+            -- Source-weighted urgency: weighted avg preserving 0-10 scale
+            -- Falls back to 0.7 for pre-existing reviews without source_weight
+            avg(
+                (enrichment->>'urgency_score')::numeric
+                * COALESCE((raw_metadata->>'source_weight')::numeric, 0.7)
+            ) / NULLIF(avg(COALESCE((raw_metadata->>'source_weight')::numeric, 0.7)), 0)
+            AS avg_urgency,
             avg(rating / NULLIF(rating_max, 0)) AS avg_rating_normalized,
             count(*) FILTER (
                 WHERE (enrichment->>'would_recommend')::boolean = true
@@ -320,25 +348,222 @@ async def _fetch_feature_gaps(pool, window_days: int) -> list[dict[str, Any]]:
     ]
 
 
+async def _fetch_negative_review_counts(pool, window_days: int) -> list[dict[str, Any]]:
+    """Count reviews with below-50% ratings per vendor."""
+    rows = await pool.fetch(
+        """
+        SELECT vendor_name, count(*) AS negative_count
+        FROM b2b_reviews
+        WHERE enrichment_status = 'enriched'
+          AND enriched_at > NOW() - make_interval(days => $1)
+          AND rating IS NOT NULL AND rating_max > 0
+          AND (rating / rating_max) < 0.5
+        GROUP BY vendor_name
+        """,
+        window_days,
+    )
+    return [{"vendor": r["vendor_name"], "negative_count": r["negative_count"]} for r in rows]
+
+
+async def _fetch_price_complaint_rates(pool, window_days: int) -> list[dict[str, Any]]:
+    """Fraction of reviews with pain_category='pricing' per vendor."""
+    rows = await pool.fetch(
+        """
+        SELECT vendor_name,
+            count(*) FILTER (WHERE enrichment->>'pain_category' = 'pricing') AS pricing_count,
+            count(*) AS total
+        FROM b2b_reviews
+        WHERE enrichment_status = 'enriched'
+          AND enriched_at > NOW() - make_interval(days => $1)
+        GROUP BY vendor_name
+        HAVING count(*) > 0
+        """,
+        window_days,
+    )
+    return [
+        {
+            "vendor": r["vendor_name"],
+            "price_complaint_rate": r["pricing_count"] / r["total"] if r["total"] else 0,
+        }
+        for r in rows
+    ]
+
+
+async def _fetch_dm_churn_rates(pool, window_days: int) -> list[dict[str, Any]]:
+    """Decision-maker churn rate: DMs with intent_to_leave / total DMs, per vendor."""
+    rows = await pool.fetch(
+        """
+        SELECT vendor_name,
+            count(*) FILTER (
+                WHERE (enrichment->'reviewer_context'->>'decision_maker')::boolean = true
+                  AND (enrichment->'churn_signals'->>'intent_to_leave')::boolean = true
+            ) AS dm_churning,
+            count(*) FILTER (
+                WHERE (enrichment->'reviewer_context'->>'decision_maker')::boolean = true
+            ) AS dm_total
+        FROM b2b_reviews
+        WHERE enrichment_status = 'enriched'
+          AND enriched_at > NOW() - make_interval(days => $1)
+        GROUP BY vendor_name
+        HAVING count(*) FILTER (
+            WHERE (enrichment->'reviewer_context'->>'decision_maker')::boolean = true
+        ) > 0
+        """,
+        window_days,
+    )
+    return [
+        {
+            "vendor": r["vendor_name"],
+            "dm_churn_rate": r["dm_churning"] / r["dm_total"] if r["dm_total"] else 0,
+        }
+        for r in rows
+    ]
+
+
+async def _fetch_churning_companies(pool, window_days: int) -> list[dict[str, Any]]:
+    """Companies with high churn intent, aggregated per vendor."""
+    rows = await pool.fetch(
+        """
+        SELECT vendor_name,
+            jsonb_agg(jsonb_build_object(
+                'company', reviewer_company,
+                'urgency', (enrichment->>'urgency_score')::numeric,
+                'role', enrichment->'reviewer_context'->>'role_level',
+                'pain', enrichment->>'pain_category'
+            ) ORDER BY (enrichment->>'urgency_score')::numeric DESC)
+            AS companies
+        FROM b2b_reviews
+        WHERE enrichment_status = 'enriched'
+          AND enriched_at > NOW() - make_interval(days => $1)
+          AND (enrichment->'churn_signals'->>'intent_to_leave')::boolean = true
+          AND reviewer_company IS NOT NULL AND reviewer_company != ''
+        GROUP BY vendor_name
+        """,
+        window_days,
+    )
+    results = []
+    for r in rows:
+        companies = r["companies"]
+        if isinstance(companies, str):
+            try:
+                companies = json.loads(companies)
+            except (json.JSONDecodeError, TypeError):
+                companies = []
+        results.append({"vendor": r["vendor_name"], "companies": companies or []})
+    return results
+
+
+async def _fetch_quotable_evidence(pool, window_days: int) -> list[dict[str, Any]]:
+    """High-urgency quotable phrases per vendor."""
+    rows = await pool.fetch(
+        """
+        SELECT vendor_name,
+            jsonb_agg(phrase.value ORDER BY (enrichment->>'urgency_score')::numeric DESC)
+            AS quotes
+        FROM b2b_reviews
+        CROSS JOIN LATERAL jsonb_array_elements_text(
+            COALESCE(enrichment->'quotable_phrases', '[]'::jsonb)
+        ) AS phrase(value)
+        WHERE enrichment_status = 'enriched'
+          AND enriched_at > NOW() - make_interval(days => $1)
+          AND (enrichment->>'urgency_score')::numeric >= 6
+        GROUP BY vendor_name
+        """,
+        window_days,
+    )
+    results = []
+    for r in rows:
+        quotes = r["quotes"]
+        if isinstance(quotes, str):
+            try:
+                quotes = json.loads(quotes)
+            except (json.JSONDecodeError, TypeError):
+                quotes = []
+        results.append({"vendor": r["vendor_name"], "quotes": quotes or []})
+    return results
+
+
 async def _fetch_prior_reports(pool) -> list[dict[str, Any]]:
-    """Fetch most recent prior intelligence reports for trend comparison."""
+    """Fetch most recent prior intelligence reports for trend comparison.
+
+    Includes both weekly_churn_feed and vendor_scorecard, with full
+    intelligence_data so the LLM can compute trends from actual numbers
+    instead of guessing from prose.
+    """
     rows = await pool.fetch(
         """
         SELECT report_type, intelligence_data, executive_summary, report_date
         FROM b2b_intelligence
-        WHERE report_type = 'weekly_churn_feed'
+        WHERE report_type IN ('weekly_churn_feed', 'vendor_scorecard')
         ORDER BY report_date DESC
-        LIMIT 2
+        LIMIT 4
         """,
     )
-    return [
-        {
+    results = []
+    for r in rows:
+        intel_data = r["intelligence_data"]
+        # asyncpg auto-deserializes JSONB to dict/list, but handle string fallback
+        if isinstance(intel_data, str):
+            try:
+                intel_data = json.loads(intel_data)
+            except (json.JSONDecodeError, TypeError):
+                intel_data = {}
+        results.append({
             "report_type": r["report_type"],
             "report_date": str(r["report_date"]),
             "executive_summary": r["executive_summary"],
-        }
-        for r in rows
-    ]
+            "intelligence_data": intel_data,
+        })
+    return results
+
+
+# ------------------------------------------------------------------
+# Lookup builders (pure Python, no DB)
+# ------------------------------------------------------------------
+
+
+def _build_pain_lookup(pain_dist: list[dict]) -> dict[str, list[dict]]:
+    """vendor -> sorted list of {category, count, avg_urgency}."""
+    lookup: dict[str, list[dict]] = {}
+    for row in pain_dist:
+        vendor = row.get("vendor", "")
+        lookup.setdefault(vendor, []).append({
+            "category": row.get("pain", "other"),
+            "count": row.get("complaint_count", 0),
+            "avg_urgency": round(row.get("avg_urgency", 0), 1),
+        })
+    for v in lookup:
+        lookup[v].sort(key=lambda x: x["count"], reverse=True)
+    return lookup
+
+
+def _build_competitor_lookup(competitive_disp: list[dict]) -> dict[str, list[dict]]:
+    """vendor -> sorted list of {name, direction, mentions}."""
+    lookup: dict[str, list[dict]] = {}
+    for row in competitive_disp:
+        vendor = row.get("vendor", "")
+        lookup.setdefault(vendor, []).append({
+            "name": row.get("competitor", ""),
+            "direction": row.get("direction", ""),
+            "mentions": row.get("mention_count", 0),
+        })
+    for v in lookup:
+        lookup[v].sort(key=lambda x: x["mentions"], reverse=True)
+    return lookup
+
+
+def _build_feature_gap_lookup(feature_gaps: list[dict]) -> dict[str, list[dict]]:
+    """vendor -> sorted list of {feature, mentions}."""
+    lookup: dict[str, list[dict]] = {}
+    for row in feature_gaps:
+        vendor = row.get("vendor", "")
+        lookup.setdefault(vendor, []).append({
+            "feature": row.get("feature_gap", ""),
+            "mentions": row.get("mentions", 0),
+        })
+    for v in lookup:
+        lookup[v].sort(key=lambda x: x["mentions"], reverse=True)
+    return lookup
 
 
 # ------------------------------------------------------------------
@@ -346,21 +571,24 @@ async def _fetch_prior_reports(pool) -> list[dict[str, Any]]:
 # ------------------------------------------------------------------
 
 
-async def _upsert_churn_signals(pool, vendor_scores: list[dict], parsed: dict) -> None:
-    """Upsert b2b_churn_signals with aggregated per-vendor metrics."""
+async def _upsert_churn_signals(
+    pool,
+    vendor_scores: list[dict],
+    neg_lookup: dict[str, int],
+    pain_lookup: dict[str, list[dict]],
+    competitor_lookup: dict[str, list[dict]],
+    feature_gap_lookup: dict[str, list[dict]],
+    price_lookup: dict[str, float],
+    dm_lookup: dict[str, float],
+    company_lookup: dict[str, list[dict]],
+    quote_lookup: dict[str, list[str]],
+) -> None:
+    """Upsert b2b_churn_signals with all 15 columns from SQL-computed data."""
     now = datetime.now(timezone.utc)
-
-    # Extract pain and competitor data from parsed output
-    scorecards = {
-        (sc.get("vendor"), sc.get("category")): sc
-        for sc in parsed.get("vendor_scorecards", [])
-        if isinstance(sc, dict)
-    }
 
     for vs in vendor_scores:
         vendor = vs["vendor_name"]
         category = vs.get("product_category")
-        sc = scorecards.get((vendor, category), {})
 
         total = vs["total_reviews"]
         recommend_yes = vs.get("recommend_yes", 0)
@@ -375,8 +603,11 @@ async def _upsert_churn_signals(pool, vendor_scores: list[dict], parsed: dict) -
                     total_reviews, negative_reviews, churn_intent_count,
                     avg_urgency_score, avg_rating_normalized, nps_proxy,
                     top_pain_categories, top_competitors, top_feature_gaps,
+                    price_complaint_rate, decision_maker_churn_rate,
+                    company_churn_list, quotable_evidence,
                     last_computed_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                          $12, $13, $14, $15, $16)
                 ON CONFLICT (vendor_name, COALESCE(product_category, '')) DO UPDATE SET
                     total_reviews = EXCLUDED.total_reviews,
                     negative_reviews = EXCLUDED.negative_reviews,
@@ -387,19 +618,27 @@ async def _upsert_churn_signals(pool, vendor_scores: list[dict], parsed: dict) -
                     top_pain_categories = EXCLUDED.top_pain_categories,
                     top_competitors = EXCLUDED.top_competitors,
                     top_feature_gaps = EXCLUDED.top_feature_gaps,
+                    price_complaint_rate = EXCLUDED.price_complaint_rate,
+                    decision_maker_churn_rate = EXCLUDED.decision_maker_churn_rate,
+                    company_churn_list = EXCLUDED.company_churn_list,
+                    quotable_evidence = EXCLUDED.quotable_evidence,
                     last_computed_at = EXCLUDED.last_computed_at
                 """,
                 vendor,
                 category,
                 total,
-                0,  # negative_reviews computed separately if needed
+                neg_lookup.get(vendor, 0),
                 vs.get("churn_intent", 0),
                 vs.get("avg_urgency", 0),
                 vs.get("avg_rating_normalized"),
                 nps,
-                json.dumps(sc.get("top_pain", [])) if isinstance(sc.get("top_pain"), list) else "[]",
-                json.dumps(sc.get("top_competitor_threat", [])) if isinstance(sc.get("top_competitor_threat"), list) else "[]",
-                "[]",
+                json.dumps(pain_lookup.get(vendor, [])[:5]),
+                json.dumps(competitor_lookup.get(vendor, [])[:5]),
+                json.dumps(feature_gap_lookup.get(vendor, [])[:5]),
+                price_lookup.get(vendor),
+                dm_lookup.get(vendor),
+                json.dumps(company_lookup.get(vendor, [])[:20]),
+                json.dumps(quote_lookup.get(vendor, [])[:10]),
                 now,
             )
         except Exception:

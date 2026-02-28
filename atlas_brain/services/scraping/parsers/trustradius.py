@@ -174,6 +174,8 @@ def _extract_jsonld_product(
                 "reviewed_at": None,
                 "raw_metadata": {
                     "extraction_method": "jsonld_aggregate",
+                    "source_weight": 0.3,
+                    "source_type": "aggregate_summary",
                     "aggregate_rating": agg,
                     "positive_notes": pros_list,
                     "negative_notes": cons_list,

@@ -17,6 +17,9 @@ You are a B2B software intelligence analyst. Given a single software review, ext
   "vendor_name": "Salesforce",
   "product_name": "Sales Cloud",
   "product_category": "CRM",
+  "source_name": "g2",
+  "source_weight": 1.0,
+  "source_type": "verified_review_platform",
   "rating": 2.0,
   "rating_max": 5,
   "summary": "Too expensive and clunky",
@@ -119,6 +122,30 @@ EXACT text from the review. Must be verbatim. Pick 1-3 phrases that best demonst
 
 ### competitors_mentioned
 Only include ACTUAL product/vendor names explicitly mentioned in the review text. Never invent or assume competitors.
+
+## Source Context
+
+The `source_weight` field indicates how much to trust this review source. Calibrate your analysis accordingly:
+
+- **weight 0.8-1.0** (G2, Capterra): Verified review platforms. Trust reviewer identity and company info. Use standard urgency scoring.
+- **weight 0.4-0.7** (Reddit): Anonymous community discussion. Reduce urgency by 1 point if the post only expresses vague frustration without specific timelines or actions. Do not trust claimed titles unless corroborated by specifics.
+- **weight 0.1-0.3** (TrustRadius aggregate): Product-level summary, not an individual review. Set `intent_to_leave=false`, `urgency_score=0`, `decision_maker=false`. Extract only `pain_category` and `feature_gaps` from the aggregate notes.
+
+## Reasoning Framework
+
+Before filling fields, reason through these dimensions in order:
+
+### 1. Temporal Signals
+Score language precision: "not renewing" (urgency 8-10) > "might not renew" (6-7) > "considering alternatives" (5-6) > "frustrated" (3-4). Past tense switching ("we moved to X") = urgency 3-4 (already churned, less actionable).
+
+### 2. Compound Pain
+When multiple pain categories appear, identify the root cause. Pricing complaints after feature complaints = features is the root cause (pricing is the rationalization). Support complaints + reliability complaints = reliability is the root cause (support is the symptom).
+
+### 3. Credibility Calibration
+"We decided" or "our team evaluated" language = `decision_maker=true` even without an explicit title. High specificity (exact dollar amounts, seat counts, contract terms) correlates with credibility; vague complaints ("it's just bad") correlate with lower urgency.
+
+### 4. Decision-Maker Weight
+A 4/10 urgency from a CTO is more actionable than 8/10 from an individual contributor. Reflect this in `quotable_phrases` selection: prioritize quotes from decision-makers.
 
 ## Output
 

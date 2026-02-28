@@ -183,7 +183,11 @@ def _parse_json_ld(
                     "company_size_raw": None,
                     "reviewer_industry": None,
                     "reviewed_at": reviewed_at,
-                    "raw_metadata": {"extraction_method": "json_ld"},
+                    "raw_metadata": {
+                        "extraction_method": "json_ld",
+                        "source_weight": 0.9,
+                        "source_type": "verified_review_platform",
+                    },
                 })
 
     return reviews
@@ -303,7 +307,11 @@ def _parse_capterra_card(card, target: ScrapeTarget) -> dict | None:
         "company_size_raw": company_size,
         "reviewer_industry": reviewer_industry,
         "reviewed_at": reviewed_at,
-        "raw_metadata": {"extraction_method": "html"},
+        "raw_metadata": {
+            "extraction_method": "html",
+            "source_weight": 0.9,
+            "source_type": "verified_review_platform",
+        },
     }
 
 
