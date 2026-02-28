@@ -11,6 +11,7 @@ runner does not double-synthesize.
 import asyncio
 import json
 import logging
+import re
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -563,6 +564,33 @@ async def _fetch_pressure_baselines(pool) -> list[dict[str, Any]]:
     return result
 
 
+# Suffixes stripped during entity name normalization (case-insensitive)
+_CORP_SUFFIXES = re.compile(
+    r',?\s+(?:Inc\.?|Corp\.?|Corporation|Company|Co\.?|Ltd\.?|LLC|PLC|SA|AG|NV|SE|Group|Holdings?)\.?$',
+    re.IGNORECASE,
+)
+
+
+def _normalize_entity_name(name: str) -> str:
+    """Canonicalize entity name to prevent duplicate pressure baselines.
+
+    Strips corporate suffixes (Inc, Corp, Co, Ltd, etc.), collapses whitespace,
+    and title-cases. "Boeing Co" and "Boeing Company" both become "Boeing".
+    """
+    name = name.strip()
+    if not name:
+        return name
+    # Strip corporate suffixes (may need multiple passes for "X Holdings Inc")
+    for _ in range(2):
+        cleaned = _CORP_SUFFIXES.sub('', name).strip()
+        if cleaned == name:
+            break
+        name = cleaned
+    # Collapse whitespace and title-case
+    name = re.sub(r'\s+', ' ', name)
+    return name.strip()
+
+
 async def _upsert_pressure_baselines(
     pool,
     pressure_readings: list[dict[str, Any]],
@@ -574,11 +602,12 @@ async def _upsert_pressure_baselines(
     prior overestimate. Delta-clamping limits the per-day change to +/-2 points
     unless sensor composite risk (HIGH/CRITICAL) justifies a larger jump.
     """
-    # Build lookup: (entity_name, entity_type) -> prior_pressure_score
+    # Build lookup: (normalized_name, entity_type) -> prior_pressure_score
     prior_scores: dict[tuple[str, str], float] = {}
     for b in prior_baselines or []:
-        key = (b.get("entity_name", ""), b.get("entity_type", "company"))
-        prior_scores[key] = float(b.get("pressure_score", 0.0))
+        key = (_normalize_entity_name(b.get("entity_name", "")), b.get("entity_type", "company"))
+        if key[0]:
+            prior_scores[key] = float(b.get("pressure_score", 0.0))
 
     MAX_DELTA = 2.0  # max change per day without sensor support
     SENSOR_SUPPORTED_DELTA = 5.0  # max change when HIGH/CRITICAL sensor composite
@@ -587,7 +616,10 @@ async def _upsert_pressure_baselines(
     upserted = 0
     clamped = 0
     for reading in pressure_readings:
-        entity_name = reading.get("entity_name")
+        raw_name = reading.get("entity_name")
+        if not raw_name:
+            continue
+        entity_name = _normalize_entity_name(raw_name)
         if not entity_name:
             continue
         entity_type = reading.get("entity_type", "company")

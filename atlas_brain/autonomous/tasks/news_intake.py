@@ -9,6 +9,7 @@ Runs as an autonomous task on a configurable interval (default 15 min).
 import asyncio
 import hashlib
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -89,12 +90,12 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         desc_lower = (article.get("description") or "").lower()
         text = f"{title_lower} {desc_lower}"
 
-        # Stage 1: keyword match
+        # Stage 1: keyword match (word-boundary to avoid "apple pie" matching "apple")
         matched_keywords: set[str] = set()
         matched_watchlist_ids: list[str] = []
         for wl in watchlist_items:
             for kw in wl["keywords"]:
-                if kw in text:
+                if re.search(r'\b' + re.escape(kw) + r'\b', text):
                     matched_keywords.add(kw)
                     if wl["id"] not in matched_watchlist_ids:
                         matched_watchlist_ids.append(wl["id"])
