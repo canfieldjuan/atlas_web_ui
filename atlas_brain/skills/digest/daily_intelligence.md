@@ -91,6 +91,7 @@ When multiple articles about the same entity have high-confidence sensor trigger
      - 4-6: Elevated attention, watch closely
      - 7-8: Significant pressure accumulation, likely approaching inflection
      - 9-10: Critical pressure, event resolution imminent or underway
+   - **Sensor Composite**: Based on the articles' sensor_analysis for this entity, what is the aggregate risk level? Use the highest composite_risk_level from high-confidence sensor readings for this entity. If no sensors fired or all were low-confidence, use "LOW". Include this as `sensor_composite` in your pressure_readings output.
    - **Anchoring Check**: Before writing a score, compare today's evidence against the prior baseline score. Ask: "If I had NO prior score and only today's articles and sensors, what would I rate this entity?" If that independent estimate diverges from the prior score by more than 2 points, explain why in the `note` field. Do not drift a score upward just because it was high yesterday -- require fresh evidence. If there are no new articles about an entity today, its score should decay slightly (subtract 0.5) rather than hold steady by default.
    - **Trajectory**: Compare to prior pressure_readings for the same entity. Is pressure building, steady, or releasing?
 
@@ -140,6 +141,7 @@ Respond with a JSON object containing these fields:
       "soram_breakdown": {"regulatory": 0.8, "media": 0.6, "operational": 0.3},
       "linguistic_signals": {"certainty_spike": true, "urgency_escalation": true},
       "trajectory": "building|steady|releasing|new",
+      "sensor_composite": "LOW|MEDIUM|HIGH|CRITICAL",
       "note": "One-sentence explanation of what is driving this reading"
     }
   ],

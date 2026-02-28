@@ -19,14 +19,13 @@ from uuid import uuid4
 
 logger = logging.getLogger("atlas.services.intervention_pipeline")
 
-# Safety gate: narrative architect requires orchestration layer controls.
-# Until Gap #6 (safety & compliance) is implemented, stage 3 is blocked
-# unless the caller explicitly opts in with allow_narrative_architect=True.
+# Safety gate: narrative architect requires explicit opt-in.
+# SafetyGate (approval workflows, audit logs, content filtering, human review)
+# is wired into stage 3. Callers must still opt in with allow_narrative_architect=True.
 _SAFETY_WARNING = (
-    "Stage 3 (Narrative Architect) skipped: orchestration-layer safety "
-    "controls (approval workflows, audit logs, content filtering, human "
-    "review gates) are not yet implemented. Pass allow_narrative_architect=True "
-    "to override for testing/research purposes only."
+    "Stage 3 (Narrative Architect) skipped: caller did not opt in. "
+    "Safety controls (content filtering, risk assessment, approval workflow, "
+    "audit logging) are active. Pass allow_narrative_architect=True to proceed."
 )
 
 

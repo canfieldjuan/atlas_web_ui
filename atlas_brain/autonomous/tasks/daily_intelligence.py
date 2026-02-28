@@ -383,7 +383,7 @@ def _compute_temporal_correlations(
     (news-first = information asymmetry, price-first = insider/algo).
     """
     from datetime import timedelta
-    from dateutil.parser import isoparse
+    from dateutil.parser import parse as dateutil_parse
 
     correlations: list[dict[str, Any]] = []
 
@@ -394,7 +394,7 @@ def _compute_temporal_correlations(
         if not ts:
             continue
         try:
-            dt = isoparse(ts) if isinstance(ts, str) else ts
+            dt = dateutil_parse(ts) if isinstance(ts, str) else ts
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             art_times.append((dt, a))
@@ -411,7 +411,7 @@ def _compute_temporal_correlations(
         if not ts:
             continue
         try:
-            dt = isoparse(ts) if isinstance(ts, str) else ts
+            dt = dateutil_parse(ts) if isinstance(ts, str) else ts
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
             mkt_moves.append((dt, m))
@@ -662,8 +662,8 @@ _CORP_SUFFIXES = re.compile(
 def _normalize_entity_name(name: str) -> str:
     """Canonicalize entity name to prevent duplicate pressure baselines.
 
-    Strips corporate suffixes (Inc, Corp, Co, Ltd, etc.), collapses whitespace,
-    and title-cases. "Boeing Co" and "Boeing Company" both become "Boeing".
+    Strips corporate suffixes (Inc, Corp, Co, Ltd, etc.) and collapses
+    whitespace. "Boeing Co" and "Boeing Company" both become "Boeing".
     """
     name = name.strip()
     if not name:
