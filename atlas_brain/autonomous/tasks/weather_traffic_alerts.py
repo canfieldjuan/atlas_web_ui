@@ -64,12 +64,12 @@ async def run(task: ScheduledTask) -> dict:
     for alert in weather_alerts:
         await _notify_weather(alert, cfg)
 
-    # 2. Area traffic incidents (radius around home)
+    # 2. Area traffic incidents (radius around home) -- batched summary
     if settings.tools.traffic_enabled and settings.tools.traffic_api_key:
         incidents = await _check_traffic_incidents(home_lat, home_lon, cfg)
         results["traffic_incidents"] = len(incidents)
-        for incident in incidents:
-            await _notify_traffic_incident(incident)
+        if incidents:
+            await _notify_traffic_batch(incidents)
 
         # 3. Commute route delay (if work location configured)
         if cfg.work_lat and cfg.work_lon:
@@ -309,23 +309,63 @@ async def _notify_weather(alert: dict, cfg) -> None:
         await _tts_announce(f"Attention. {event} issued for your area.")
 
 
-async def _notify_traffic_incident(incident: dict) -> None:
-    """Send ntfy push for a traffic incident."""
-    inc_type = incident["type"]
-    magnitude = incident["magnitude"]
+async def _notify_traffic_batch(incidents: list[dict]) -> None:
+    """Send a single batched ntfy push summarizing all new traffic incidents.
 
-    # Higher priority for road closures and major accidents
-    is_major = inc_type in ("Road Closed", "Accident") or magnitude >= 3
-    priority = "high" if is_major else "default"
-    tags = "car,warning"
+    Groups by incident type and lists impacted roads rather than firing
+    one notification per street.
+    """
+    from collections import defaultdict
 
-    title = f"Traffic Alert: {inc_type}"
-    body = incident.get("description", "")
-    location = incident.get("location", "")
-    if location:
-        body = f"{body}\n{location}" if body else location
+    # Group incidents by type
+    by_type: dict[str, list[dict]] = defaultdict(list)
+    for inc in incidents:
+        by_type[inc["type"]].append(inc)
 
-    await _push_ntfy(title, body, priority=priority, tags=tags)
+    total = len(incidents)
+    has_major = any(
+        inc["type"] in ("Road Closed", "Accident") or inc["magnitude"] >= 3
+        for inc in incidents
+    )
+    priority = "high" if has_major else "default"
+
+    # Title: count + dominant type
+    dominant_type = max(by_type, key=lambda t: len(by_type[t]))
+    if len(by_type) == 1:
+        title = f"Traffic: {total} {dominant_type}{'s' if total > 1 else ''} nearby"
+    else:
+        title = f"Traffic: {total} incidents nearby"
+
+    # Body: one line per type group, roads listed inline
+    lines = []
+    # Order: closures and accidents first
+    priority_types = ["Road Closed", "Accident", "Dangerous Conditions", "Ice on Road"]
+    ordered_types = priority_types + [t for t in by_type if t not in priority_types]
+
+    for inc_type in ordered_types:
+        group = by_type.get(inc_type)
+        if not group:
+            continue
+
+        # Collect unique road names from location strings
+        roads = []
+        for inc in group:
+            loc = inc.get("location", "").strip()
+            if loc and loc not in roads:
+                roads.append(loc)
+
+        count = len(group)
+        if roads:
+            # Truncate road list to keep message concise
+            road_str = "; ".join(roads[:4])
+            if len(roads) > 4:
+                road_str += f" (+{len(roads) - 4} more)"
+            lines.append(f"{inc_type} ×{count}: {road_str}")
+        else:
+            lines.append(f"{inc_type} ×{count}")
+
+    body = "\n".join(lines)
+    await _push_ntfy(title, body, priority=priority, tags="car,warning")
 
 
 async def _notify_commute_delay(delay_min: int, travel_min: int, distance: float) -> None:
