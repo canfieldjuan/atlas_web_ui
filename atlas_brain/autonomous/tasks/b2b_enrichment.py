@@ -208,6 +208,29 @@ _KNOWN_PAIN_CATEGORIES = {
 }
 
 
+def _coerce_bool(value: Any) -> bool | None:
+    """Coerce a value to bool. Returns None if unrecognizable."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        if value.lower() in ("true", "yes", "1"):
+            return True
+        if value.lower() in ("false", "no", "0"):
+            return False
+    return None
+
+
+_CHURN_SIGNAL_BOOL_FIELDS = (
+    "intent_to_leave",
+    "actively_evaluating",
+    "migration_in_progress",
+    "support_escalation",
+    "contract_renewal_mentioned",
+)
+
+
 def _validate_enrichment(result: dict) -> bool:
     """Validate enrichment output structure and data consistency."""
     if "churn_signals" not in result:
@@ -236,24 +259,61 @@ def _validate_enrichment(result: dict) -> bool:
         logger.warning("urgency_score out of range [0,10]: %s", urgency)
         return False
 
+    # Boolean coercion: churn_signals fields used in ::boolean casts
+    signals = result["churn_signals"]
+    for field in _CHURN_SIGNAL_BOOL_FIELDS:
+        if field in signals:
+            coerced = _coerce_bool(signals[field])
+            if coerced is None:
+                logger.warning("churn_signals.%s unrecognizable bool: %r -- rejecting", field, signals[field])
+                return False
+            signals[field] = coerced
+
     # Consistency warning: high urgency with no intent_to_leave
-    intent = result.get("churn_signals", {}).get("intent_to_leave")
+    intent = signals.get("intent_to_leave")
     if urgency >= 9 and intent is False:
         logger.warning(
             "Contradictory: urgency=%s but intent_to_leave=false -- accepting with warning",
             urgency,
         )
 
-    # Type check: competitors_mentioned must be list if present
+    # Boolean coercion: reviewer_context.decision_maker (used in ::boolean cast)
+    reviewer_ctx = result.get("reviewer_context")
+    if isinstance(reviewer_ctx, dict) and "decision_maker" in reviewer_ctx:
+        coerced = _coerce_bool(reviewer_ctx["decision_maker"])
+        if coerced is None:
+            logger.warning("reviewer_context.decision_maker unrecognizable bool: %r -- rejecting", reviewer_ctx["decision_maker"])
+            return False
+        reviewer_ctx["decision_maker"] = coerced
+
+    # Type check: competitors_mentioned must be list; items must be dicts with "name"
     competitors = result.get("competitors_mentioned")
     if competitors is not None and not isinstance(competitors, list):
         logger.warning("competitors_mentioned is not a list: %s", type(competitors).__name__)
         result["competitors_mentioned"] = []
+    elif isinstance(competitors, list):
+        result["competitors_mentioned"] = [
+            c for c in competitors
+            if isinstance(c, dict) and "name" in c
+        ]
 
-    # Warn on unknown pain_category
+    # Type check: quotable_phrases must be list if present
+    qp = result.get("quotable_phrases")
+    if qp is not None and not isinstance(qp, list):
+        logger.warning("quotable_phrases is not a list: %s", type(qp).__name__)
+        result["quotable_phrases"] = []
+
+    # Type check: feature_gaps must be list if present
+    fg = result.get("feature_gaps")
+    if fg is not None and not isinstance(fg, list):
+        logger.warning("feature_gaps is not a list: %s", type(fg).__name__)
+        result["feature_gaps"] = []
+
+    # Coerce unknown pain_category to "other"
     pain = result.get("pain_category")
     if pain and pain not in _KNOWN_PAIN_CATEGORIES:
-        logger.warning("Unknown pain_category: %r (accepting)", pain)
+        logger.warning("Unknown pain_category: %r -- coercing to 'other'", pain)
+        result["pain_category"] = "other"
 
     return True
 

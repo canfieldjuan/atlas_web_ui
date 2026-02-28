@@ -26,6 +26,22 @@ from ...storage.models import ScheduledTask
 logger = logging.getLogger("atlas.autonomous.tasks.b2b_churn_intelligence")
 
 
+def _safe_json(value: Any, default: Any = None) -> Any:
+    """Safely deserialize a JSON value, returning *default* on failure."""
+    if default is None:
+        default = []
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default
+    return default
+
+
 async def run(task: ScheduledTask) -> dict[str, Any]:
     """Autonomous task handler: weekly B2B churn intelligence."""
     cfg = settings.b2b_churn
@@ -95,6 +111,9 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
         "competitive_displacement": competitive_disp,
         "pain_distribution": pain_dist,
         "feature_gaps": feature_gaps,
+        "negative_review_counts": negative_counts,
+        "price_complaint_rates": price_rates,
+        "decision_maker_churn_rates": dm_rates,
         "prior_reports": prior_reports,
     }
 
@@ -249,21 +268,25 @@ async def _fetch_high_intent_companies(pool, urgency_threshold: int, window_days
         urgency_threshold,
         window_days,
     )
-    return [
-        {
+    results = []
+    for r in rows:
+        try:
+            urgency = float(r["urgency"]) if r["urgency"] is not None else 0
+        except (ValueError, TypeError):
+            urgency = 0
+        results.append({
             "company": r["reviewer_company"],
             "vendor": r["vendor_name"],
             "category": r["product_category"],
             "role_level": r["role_level"],
             "decision_maker": r["is_dm"],
-            "urgency": float(r["urgency"]) if r["urgency"] else 0,
+            "urgency": urgency,
             "pain": r["pain"],
-            "alternatives": json.loads(r["alternatives"]) if isinstance(r["alternatives"], str) else (r["alternatives"] or []),
-            "quotes": json.loads(r["quotes"]) if isinstance(r["quotes"], str) else (r["quotes"] or []),
+            "alternatives": _safe_json(r["alternatives"]),
+            "quotes": _safe_json(r["quotes"]),
             "contract_signal": r["value_signal"],
-        }
-        for r in rows
-    ]
+        })
+    return results
 
 
 async def _fetch_competitive_displacement(pool, window_days: int) -> list[dict[str, Any]]:
@@ -443,13 +466,8 @@ async def _fetch_churning_companies(pool, window_days: int) -> list[dict[str, An
     )
     results = []
     for r in rows:
-        companies = r["companies"]
-        if isinstance(companies, str):
-            try:
-                companies = json.loads(companies)
-            except (json.JSONDecodeError, TypeError):
-                companies = []
-        results.append({"vendor": r["vendor_name"], "companies": companies or []})
+        companies = _safe_json(r["companies"])
+        results.append({"vendor": r["vendor_name"], "companies": companies})
     return results
 
 
@@ -473,13 +491,8 @@ async def _fetch_quotable_evidence(pool, window_days: int) -> list[dict[str, Any
     )
     results = []
     for r in rows:
-        quotes = r["quotes"]
-        if isinstance(quotes, str):
-            try:
-                quotes = json.loads(quotes)
-            except (json.JSONDecodeError, TypeError):
-                quotes = []
-        results.append({"vendor": r["vendor_name"], "quotes": quotes or []})
+        quotes = _safe_json(r["quotes"])
+        results.append({"vendor": r["vendor_name"], "quotes": quotes})
     return results
 
 
