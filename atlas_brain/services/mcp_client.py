@@ -30,6 +30,7 @@ _SERVER_CATEGORIES = {
     "calendar": "scheduling",
     "twilio": "communication",
     "invoicing": "billing",
+    "intelligence": "intelligence",
 }
 
 # Internal tool names that MUST NOT be overwritten by MCP servers.
@@ -209,6 +210,7 @@ class MCPToolProvider:
             ("calendar", settings.mcp.calendar_enabled, "atlas_brain.mcp.calendar_server"),
             ("twilio", settings.mcp.twilio_enabled, "atlas_brain.mcp.twilio_server"),
             ("invoicing", settings.mcp.invoicing_enabled, "atlas_brain.mcp.invoicing_server"),
+            ("intelligence", settings.mcp.intelligence_enabled, "atlas_brain.mcp.intelligence_server"),
         ]
 
         configs = []
