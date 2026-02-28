@@ -152,8 +152,13 @@ def parse_json_response(
         if recovered:
             return recovered
 
-    # 5. Fallback
-    return {"analysis_text": text}
+    # 5. Fallback -- all structured fields lost, only raw text preserved
+    logger.warning(
+        "parse_json_response fell back to raw text (%d chars). "
+        "LLM output was not valid JSON.",
+        len(text),
+    )
+    return {"analysis_text": text, "_parse_fallback": True}
 
 
 def _recover_truncated_json(raw_text: str) -> dict[str, Any] | None:

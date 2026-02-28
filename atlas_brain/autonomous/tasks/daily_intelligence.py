@@ -119,6 +119,8 @@ async def run(task: ScheduledTask) -> dict[str, Any]:
 
     # Parse structured output from LLM
     parsed = parse_json_response(analysis, recover_truncated=True)
+    if parsed.get("_parse_fallback"):
+        logger.warning("Daily intelligence LLM output was not valid JSON; structured fields will be empty")
 
     # Persist to reasoning_journal
     pressure_readings = parsed.get("pressure_readings", [])
