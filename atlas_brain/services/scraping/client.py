@@ -14,7 +14,7 @@ import random
 
 from curl_cffi.requests import AsyncSession, Response
 
-from .captcha import CaptchaType, detect_captcha, get_captcha_solver, is_captcha_enabled_for_domain
+from .captcha import CaptchaType, detect_captcha, get_captcha_proxy, get_captcha_solver, is_captcha_enabled_for_domain
 from .profiles import BrowserProfile, BrowserProfileManager
 from .proxy import ProxyConfig, ProxyManager
 from .rate_limiter import DomainRateLimiter
@@ -85,6 +85,9 @@ class AntiDetectionClient:
         # If the solver swapped the UA (e.g. CapSolver requires Chrome 137+),
         # override the header on the retry so cookies match the solved UA.
         override_ua: str | None = None
+        # If the solver used a sticky proxy, override the proxy on retry
+        # so the retry IP matches (critical for IP-bound cookies like cf_clearance).
+        override_proxy: str | None = None
 
         attempt = 0
         while attempt <= max_retries:
@@ -119,7 +122,7 @@ class AntiDetectionClient:
 
                 # 6. Execute via curl_cffi with matching TLS fingerprint
                 domain_cookies = self._get_domain_cookies(domain)
-                effective_proxy = proxy.url if proxy else None
+                effective_proxy = override_proxy or (proxy.url if proxy else None)
                 async with AsyncSession(impersonate=profile.impersonate) as session:
                     resp = await session.get(
                         url,
@@ -145,22 +148,29 @@ class AntiDetectionClient:
                                 attempt + 1, max_retries + 1,
                             )
                             try:
+                                # Use sticky captcha proxy if configured,
+                                # otherwise fall back to the current rotating proxy.
+                                captcha_proxy = get_captcha_proxy()
+                                solve_proxy = captcha_proxy or (proxy.url if proxy else None)
                                 solution = await solver.solve(
                                     captcha_type=captcha_type,
                                     page_url=url,
                                     page_html=resp.text,
                                     user_agent=profile.user_agent,
-                                    proxy_url=proxy.url if proxy else None,
+                                    proxy_url=solve_proxy,
                                 )
                                 # Store solved cookies and pin profile
                                 self._get_domain_cookies(domain).update(solution.cookies)
                                 pinned_profile = profile
                                 if solution.user_agent:
                                     override_ua = solution.user_agent
+                                # Pin proxy so retry uses same IP as the solve
+                                if solution.sticky_proxy:
+                                    override_proxy = solution.sticky_proxy
                                 logger.info(
-                                    "CAPTCHA solved for %s in %dms, retrying (ua_override=%s)",
+                                    "CAPTCHA solved for %s in %dms, retrying (ua_override=%s, proxy_override=%s)",
                                     domain, solution.solve_time_ms,
-                                    bool(solution.user_agent),
+                                    bool(solution.user_agent), bool(override_proxy),
                                 )
                                 # Successful solve always gets one more attempt.
                                 # Don't increment attempt — the solve itself isn't a retry.

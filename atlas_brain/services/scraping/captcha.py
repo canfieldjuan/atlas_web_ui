@@ -48,8 +48,8 @@ def detect_captcha(response_text: str, status_code: int) -> CaptchaType:
     if "captcha-delivery.com" in body and "var dd=" in body:
         return CaptchaType.DATADOME
 
-    # Cloudflare managed challenge
-    if "attention required" in body and "cloudflare" in body:
+    # Cloudflare managed challenge / JS challenge
+    if "cloudflare" in body and ("attention required" in body or "just a moment" in body):
         return CaptchaType.CLOUDFLARE
 
     return CaptchaType.NONE
@@ -102,6 +102,7 @@ class CaptchaSolution:
     cookies: dict[str, str]
     solve_time_ms: int
     user_agent: str | None = None  # UA used for the solve (may differ from request UA)
+    sticky_proxy: str | None = None  # Proxy URL used for the solve (retry must use same IP)
 
 
 # ---------------------------------------------------------------------------
@@ -193,13 +194,15 @@ class CaptchaSolver:
 
         elapsed = int((time.monotonic() - t0) * 1000)
         logger.info(
-            "CAPTCHA solved: type=%s provider=%s time=%dms ua_swapped=%s",
+            "CAPTCHA solved: type=%s provider=%s time=%dms ua_swapped=%s proxy=%s",
             captcha_type.value, self._provider, elapsed, ua_swapped,
+            bool(proxy_url),
         )
         return CaptchaSolution(
             cookies=cookies,
             solve_time_ms=elapsed,
             user_agent=solve_ua if ua_swapped else None,
+            sticky_proxy=proxy_url,
         )
 
     # -- CapSolver ----------------------------------------------------------
@@ -483,3 +486,23 @@ def is_captcha_enabled_for_domain(domain: str) -> bool:
     # Ensure singleton is initialized
     get_captcha_solver()
     return domain.lower() in _enabled_domains
+
+
+_captcha_proxy: str | None = None
+
+
+def get_captcha_proxy() -> str | None:
+    """Get the sticky proxy URL configured for CAPTCHA solving, or None."""
+    global _captcha_proxy
+    if _captcha_proxy is not None:
+        return _captcha_proxy or None  # empty string -> None
+
+    # Ensure singleton is initialized (loads config)
+    get_captcha_solver()
+
+    from ...config import settings
+    url = settings.b2b_scrape.captcha_proxy_url.strip()
+    _captcha_proxy = url or ""
+    if url:
+        logger.info("CAPTCHA sticky proxy configured: %s", url.split("@")[-1])
+    return url or None

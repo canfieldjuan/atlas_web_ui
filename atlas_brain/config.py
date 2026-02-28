@@ -2041,6 +2041,7 @@ class B2BScrapeConfig(BaseSettings):
     captcha_provider: str = Field(default="capsolver", description="CAPTCHA solver provider (capsolver or 2captcha)")
     captcha_api_key: str = Field(default="", description="CAPTCHA solver API key")
     captcha_domains: str = Field(default="g2.com,capterra.com", description="Domains with CAPTCHA solving enabled (comma-separated)")
+    captcha_proxy_url: str = Field(default="", description="Sticky/static proxy URL for CAPTCHA solving (same IP for solve + retry)")
 
 
 class TemporalPatternConfig(BaseSettings):
