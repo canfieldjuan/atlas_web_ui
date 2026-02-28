@@ -124,7 +124,7 @@ register_pipeline(PipelineConfig(
             schedule_type="interval",
             interval_seconds=None,
             timeout_seconds=300,
-            description="Second-pass deep extraction of 10+ rich fields per review for content generation",
+            description="Deep extraction of 32 structured fields per review (product analysis, buyer psychology, extended context)",
             metadata={"builtin_handler": "deep_enrichment"},
             interval_config_key="external_data.deep_enrichment_interval_seconds",
         ),

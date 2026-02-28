@@ -1,14 +1,14 @@
 ---
 name: digest/deep_extraction
 domain: digest
-description: Deep per-review extraction of sentiment aspects, failure details, buyer context, comparisons, and quotable proof
+description: Deep per-review extraction of 32 structured fields covering product analysis, buyer psychology, and extended context
 tags: [digest, complaints, deep-extraction, ecommerce, autonomous]
-version: 1
+version: 2
 ---
 
 # Deep Review Extraction
 
-You are a product review analyst performing deep extraction. Given a product review with its basic classification, extract 10 structured fields for content generation.
+You are a product review analyst performing deep extraction. Given a product review with its basic classification, extract 32 structured fields across three sections for content generation and market intelligence.
 
 ## Input
 
@@ -25,7 +25,7 @@ You are a product review analyst performing deep extraction. Given a product rev
 }
 ```
 
-## Extraction Fields
+## Section A: Product Analysis (10 fields)
 
 ### sentiment_aspects (required, array)
 What specific aspects does the reviewer feel strongly about? Max 6.
@@ -66,6 +66,99 @@ Mentions of forums, YouTube videos, Reddit posts, warranty claims, customer serv
 ### positive_aspects (required, array of strings)
 What the reviewer praises, even in a negative review. Useful for identifying tradeoffs ("great price but terrible quality"). Empty array if purely negative with no positives mentioned.
 
+## Section B: Buyer Psychology (12 fields)
+
+### expertise_level (required, string)
+Infer the reviewer's expertise level from their vocabulary, comparisons, and technical detail.
+Values: `"novice"` | `"intermediate"` | `"expert"` | `"professional"`
+- novice: basic language, no comparisons, confused by simple issues
+- intermediate: some domain knowledge, makes comparisons, understands trade-offs
+- expert: technical vocabulary, specific failure modes, references specs
+- professional: describes commercial or occupational use, mentions workplace/clients
+
+### frustration_threshold (required, string)
+How quickly did the reviewer reach their emotional breaking point?
+Values: `"low"` | `"medium"` | `"high"`
+- low: product failed or disappointed immediately, tone is outraged or defeated early
+- medium: gave the product fair effort before expressing frustration
+- high: very patient, multiple attempts, tried fixes before losing faith
+
+### discovery_channel (required, string)
+How did the reviewer likely find or choose this product?
+Values: `"amazon_organic"` | `"youtube"` | `"reddit"` | `"friend"` | `"amazon_choice"` | `"unknown"`
+Infer from context clues: "saw a review on YouTube", "my friend recommended", "Amazon's Choice badge", "#1 bestseller", etc. Use `"unknown"` if no signal.
+
+### consideration_set (required, array)
+Other products or brands the reviewer considered before buying.
+Each element: `{"product": string, "why_not": string}`
+Empty array if no alternatives are mentioned.
+
+### buyer_household (required, string)
+Who does the buyer represent?
+Values: `"single"` | `"family"` | `"professional"` | `"gift"` | `"bulk"`
+
+### profession_hint (required, string or null)
+If the review reveals the reviewer's occupation or professional role, extract it. Null if no profession is inferable.
+
+### budget_type (required, string)
+How did the reviewer approach the price/value decision?
+Values: `"budget_constrained"` | `"value_seeker"` | `"premium_willing"` | `"unknown"`
+
+### use_intensity (required, string)
+How heavily does the reviewer use the product?
+Values: `"light"` | `"moderate"` | `"heavy"`
+
+### research_depth (required, string)
+How much research did the reviewer do before buying?
+Values: `"impulse"` | `"light"` | `"moderate"` | `"deep"`
+
+### community_mentions (required, array)
+References to communities, forums, subreddits, Facebook groups, or YouTube channels.
+Each element: `{"platform": string, "context": string}`
+Empty array if none.
+
+### consequence_severity (required, string)
+What was the real-world impact of the product failure or disappointment?
+Values: `"inconvenience"` | `"workflow_impact"` | `"financial_loss"` | `"safety_concern"`
+
+### replacement_behavior (required, string)
+What did the reviewer do after the disappointment?
+Values: `"returned"` | `"replaced_same"` | `"switched_brand"` | `"kept_broken"` | `"unknown"`
+
+## Section C: Extended Context (10 fields)
+
+### brand_loyalty_depth (required, string)
+How loyal is this reviewer to the brand before this experience?
+Values: `"first_time"` | `"occasional"` | `"loyal"` | `"long_term_loyal"`
+
+### ecosystem_lock_in (required, object)
+`{"level": "free"|"partially"|"fully", "ecosystem": string|null}`
+
+### safety_flag (required, object)
+`{"flagged": boolean, "description": string|null}`
+Only flag genuine physical danger -- injury, fire, electric shock, burn, chemical exposure, choking hazard, toxic material, structural failure.
+
+### bulk_purchase_signal (required, object)
+`{"type": "single"|"multi", "estimated_qty": integer|null}`
+
+### review_delay_signal (required, string)
+Values: `"immediate"` | `"days"` | `"weeks"` | `"months"` | `"unknown"`
+
+### sentiment_trajectory (required, string)
+Values: `"always_bad"` | `"degraded"` | `"mixed_then_bad"` | `"initially_positive"` | `"unknown"`
+
+### occasion_context (required, string)
+Values: `"none"` | `"gift"` | `"replacement"` | `"upgrade"` | `"first_in_category"` | `"seasonal"`
+
+### switching_barrier (required, object)
+`{"level": "none"|"low"|"medium"|"high", "reason": string|null}`
+
+### amplification_intent (required, object)
+`{"intent": "quiet"|"private"|"social", "context": string|null}`
+
+### review_sentiment_openness (required, object)
+`{"open": boolean, "condition": string|null}`
+
 ## Output
 
 Respond with ONLY a valid JSON object. No explanation, no markdown fencing.
@@ -75,14 +168,14 @@ Respond with ONLY a valid JSON object. No explanation, no markdown fencing.
 Input:
 ```json
 {
-  "review_text": "I bought this for my home office setup. The Acme Widget Pro looked great and the price was right at $49. Unfortunately after just 3 weeks the power button stopped responding completely. I tried the reset procedure from their YouTube channel but nothing worked. Customer service was helpful but couldn't fix it either. Now I'm switching to the BrandX Model 5 which my colleague recommended. I wish they had used better quality switches. The build quality otherwise was actually decent and it looked nice on my desk.",
-  "summary": "Died after 3 weeks",
+  "review_text": "I'm a nurse and bought this for 12-hour shifts. The Acme Widget Pro looked great and the price was right at $49. Saw it on a YouTube review comparing top 3 options -- went with this over BrandX because it was $30 cheaper. After just 3 weeks the power button stopped responding completely. I tried the reset procedure from their YouTube channel but nothing worked. Customer service was helpful but couldn't fix it. One unit got extremely hot -- worried about fire risk near my desk. I bought 2 of these originally. Now switching to BrandX Model 5 which my colleague recommended. I posted about it on Reddit and others have the same issue. I wish they had used better quality switches. If they fix the firmware I'd consider giving them another chance.",
+  "summary": "Died after 3 weeks, overheating concern",
   "rating": 2.0,
   "product_name": "Acme Widget Pro",
   "brand": "Acme",
   "root_cause": "hardware_defect",
   "severity": "critical",
-  "pain_score": 7.5
+  "pain_score": 8.0
 }
 ```
 
@@ -92,8 +185,7 @@ Output:
   "sentiment_aspects": [
     {"aspect": "durability", "sentiment": "negative", "detail": "Power button stopped responding after 3 weeks"},
     {"aspect": "value", "sentiment": "mixed", "detail": "Good price at $49 but failed quickly"},
-    {"aspect": "appearance", "sentiment": "positive", "detail": "Looked nice on desk"},
-    {"aspect": "quality", "sentiment": "mixed", "detail": "Build quality decent overall but switch quality poor"},
+    {"aspect": "temperature", "sentiment": "negative", "detail": "Unit got extremely hot"},
     {"aspect": "customer_service", "sentiment": "positive", "detail": "Customer service was helpful"}
   ],
   "feature_requests": ["Better quality switches"],
@@ -101,34 +193,65 @@ Output:
     "timeline": "3 weeks",
     "failed_component": "power button",
     "failure_mode": "stopped responding completely",
-    "dollar_amount_lost": 49
+    "dollar_amount_lost": 98
   },
   "product_comparisons": [
-    {"product_name": "BrandX Model 5", "direction": "switched_to", "context": "Colleague recommended as replacement"}
+    {"product_name": "BrandX Model 5", "direction": "switched_to", "context": "Colleague recommended as replacement"},
+    {"product_name": "BrandX", "direction": "considered", "context": "Was $30 more expensive"}
   ],
   "product_name_mentioned": "Acme Widget Pro",
   "buyer_context": {
-    "use_case": "home office",
-    "buyer_type": "casual",
+    "use_case": "12-hour nursing shifts",
+    "buyer_type": "professional",
     "price_sentiment": "fair"
   },
   "quotable_phrases": [
     "after just 3 weeks the power button stopped responding completely",
-    "I wish they had used better quality switches"
+    "got extremely hot -- worried about fire risk"
   ],
   "would_repurchase": false,
   "external_references": [
-    {"source": "YouTube", "context": "Tried reset procedure from their YouTube channel"}
+    {"source": "YouTube", "context": "Review comparing top 3 options and reset procedure"},
+    {"source": "Reddit", "context": "Posted about the issue, others have same problem"}
   ],
-  "positive_aspects": ["Decent build quality", "Nice appearance", "Good price", "Helpful customer service"]
+  "positive_aspects": ["Good price", "Helpful customer service"],
+  "expertise_level": "intermediate",
+  "frustration_threshold": "medium",
+  "discovery_channel": "youtube",
+  "consideration_set": [
+    {"product": "BrandX", "why_not": "price -- $30 more expensive"}
+  ],
+  "buyer_household": "professional",
+  "profession_hint": "nurse",
+  "budget_type": "value_seeker",
+  "use_intensity": "heavy",
+  "research_depth": "moderate",
+  "community_mentions": [
+    {"platform": "youtube", "context": "review comparing top 3 options"},
+    {"platform": "reddit", "context": "posted about the issue"}
+  ],
+  "consequence_severity": "financial_loss",
+  "replacement_behavior": "switched_brand",
+  "brand_loyalty_depth": "first_time",
+  "ecosystem_lock_in": {"level": "free", "ecosystem": null},
+  "safety_flag": {"flagged": true, "description": "Unit got extremely hot, fire risk near desk"},
+  "bulk_purchase_signal": {"type": "multi", "estimated_qty": 2},
+  "review_delay_signal": "weeks",
+  "sentiment_trajectory": "degraded",
+  "occasion_context": "none",
+  "switching_barrier": {"level": "none", "reason": null},
+  "amplification_intent": {"intent": "social", "context": "posted about it on Reddit"},
+  "review_sentiment_openness": {"open": true, "condition": "if they fix the firmware"}
 }
 ```
 
 ## Rules
 
-- All 10 fields are REQUIRED. Use empty arrays `[]`, null, or empty string `""` when not applicable.
+- All 32 fields are REQUIRED. Use empty arrays `[]`, null, or empty string `""` when not applicable.
 - quotable_phrases must be EXACT text from the review -- never paraphrase or fabricate.
-- product_comparisons must only include products ACTUALLY mentioned -- never invent alternatives.
-- Classify based on review content, not assumptions from rating alone.
+- product_comparisons and consideration_set must only include products ACTUALLY mentioned.
+- community_mentions must only reference platforms explicitly mentioned in the review.
+- safety_flag: only flag genuine physical danger, not general product failures.
+- estimated_qty in bulk_purchase_signal must be an integer or null, never a string.
 - Keep sentiment_aspects to max 6 -- pick the most important ones.
 - Always output valid JSON only -- no prose, no markdown code fences.

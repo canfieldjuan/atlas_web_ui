@@ -1,8 +1,8 @@
 """
 Parallel deep enrichment blaster.
 
-Second-pass extraction: 10+ rich fields per review using local LLM (qwen3:14b).
-Single-review mode only (no batching -- output is ~600 tokens, batching risks truncation).
+Single-pass extraction: 32 rich fields per review using local LLM (qwen3:14b).
+Single-review mode only (no batching -- output is ~1200 tokens, batching risks truncation).
 
 Runs N concurrent workers. Each worker:
   1. Claims a batch (UPDATE ... SET deep_enrichment_status='processing' ... SKIP LOCKED)
@@ -11,7 +11,7 @@ Runs N concurrent workers. Each worker:
   4. Writes JSONB results back
 
 Usage:
-    python scripts/blast_deep_enrichment.py                         # 2 workers, all tiers
+    python scripts/blast_deep_enrichment.py                         # 3 workers, all tiers
     python scripts/blast_deep_enrichment.py --tier 1 --workers 2    # tier 1 only (50+ reviews/ASIN)
     python scripts/blast_deep_enrichment.py --validate 10           # inspect 10 sample outputs
     python scripts/blast_deep_enrichment.py --dry-run               # show tier counts, exit
@@ -39,8 +39,9 @@ _enriched = 0
 _failed = 0
 _lock = asyncio.Lock()
 
-# Required keys and their expected types for validation
+# Required keys and their expected types for validation (32 fields across 3 sections)
 _REQUIRED_KEYS = {
+    # Section A: Product Analysis (10)
     "sentiment_aspects": list,
     "feature_requests": list,
     "failure_details": (dict, type(None)),
@@ -51,7 +52,48 @@ _REQUIRED_KEYS = {
     "would_repurchase": (bool, type(None)),
     "external_references": list,
     "positive_aspects": list,
+    # Section B: Buyer Psychology (12)
+    "expertise_level": str,
+    "frustration_threshold": str,
+    "discovery_channel": str,
+    "consideration_set": list,
+    "buyer_household": str,
+    "profession_hint": (str, type(None)),
+    "budget_type": str,
+    "use_intensity": str,
+    "research_depth": str,
+    "community_mentions": list,
+    "consequence_severity": str,
+    "replacement_behavior": str,
+    # Section C: Extended Context (10)
+    "brand_loyalty_depth": str,
+    "ecosystem_lock_in": dict,
+    "safety_flag": dict,
+    "bulk_purchase_signal": dict,
+    "review_delay_signal": str,
+    "sentiment_trajectory": str,
+    "occasion_context": str,
+    "switching_barrier": dict,
+    "amplification_intent": dict,
+    "review_sentiment_openness": dict,
 }
+
+# Enum sets for Section B
+_VALID_EXPERTISE = {"novice", "intermediate", "expert", "professional"}
+_VALID_FRUSTRATION = {"low", "medium", "high"}
+_VALID_DISCOVERY = {"amazon_organic", "youtube", "reddit", "friend", "amazon_choice", "unknown"}
+_VALID_HOUSEHOLD = {"single", "family", "professional", "gift", "bulk"}
+_VALID_BUDGET = {"budget_constrained", "value_seeker", "premium_willing", "unknown"}
+_VALID_INTENSITY = {"light", "moderate", "heavy"}
+_VALID_RESEARCH = {"impulse", "light", "moderate", "deep"}
+_VALID_CONSEQUENCE = {"inconvenience", "workflow_impact", "financial_loss", "safety_concern"}
+_VALID_REPLACEMENT = {"returned", "replaced_same", "switched_brand", "kept_broken", "unknown"}
+
+# Enum sets for Section C
+_VALID_LOYALTY = {"first_time", "occasional", "loyal", "long_term_loyal"}
+_VALID_DELAY = {"immediate", "days", "weeks", "months", "unknown"}
+_VALID_TRAJECTORY = {"always_bad", "degraded", "mixed_then_bad", "initially_positive", "unknown"}
+_VALID_OCCASION = {"none", "gift", "replacement", "upgrade", "first_in_category", "seasonal"}
 
 # Tier definitions: (min_reviews, max_reviews_or_none)
 _TIERS = {
@@ -78,7 +120,7 @@ def _tier_subquery(tier: str) -> str:
 
 
 def _validate_extraction(data: dict) -> bool:
-    """Check all 10 required keys present with correct types."""
+    """Check all 32 required keys present with correct types, enums, and sub-objects."""
     for key, expected in _REQUIRED_KEYS.items():
         if key not in data:
             return False
@@ -89,12 +131,64 @@ def _validate_extraction(data: dict) -> bool:
         else:
             if not isinstance(val, expected):
                 return False
-    # Validate buyer_context has required subfields
+
+    # Section A sub-object: buyer_context
     bc = data.get("buyer_context")
     if isinstance(bc, dict):
         for field in ("use_case", "buyer_type", "price_sentiment"):
             if field not in bc:
                 return False
+
+    # Section B enum validation
+    if data.get("expertise_level") not in _VALID_EXPERTISE:
+        return False
+    if data.get("frustration_threshold") not in _VALID_FRUSTRATION:
+        return False
+    if data.get("discovery_channel") not in _VALID_DISCOVERY:
+        return False
+    if data.get("buyer_household") not in _VALID_HOUSEHOLD:
+        return False
+    if data.get("budget_type") not in _VALID_BUDGET:
+        return False
+    if data.get("use_intensity") not in _VALID_INTENSITY:
+        return False
+    if data.get("research_depth") not in _VALID_RESEARCH:
+        return False
+    if data.get("consequence_severity") not in _VALID_CONSEQUENCE:
+        return False
+    if data.get("replacement_behavior") not in _VALID_REPLACEMENT:
+        return False
+
+    # Section C enum validation
+    if data.get("brand_loyalty_depth") not in _VALID_LOYALTY:
+        return False
+    if data.get("review_delay_signal") not in _VALID_DELAY:
+        return False
+    if data.get("sentiment_trajectory") not in _VALID_TRAJECTORY:
+        return False
+    if data.get("occasion_context") not in _VALID_OCCASION:
+        return False
+
+    # Section C sub-object key checks
+    eco = data.get("ecosystem_lock_in", {})
+    if not isinstance(eco, dict) or "level" not in eco or "ecosystem" not in eco:
+        return False
+    safety = data.get("safety_flag", {})
+    if not isinstance(safety, dict) or "flagged" not in safety or "description" not in safety:
+        return False
+    bulk = data.get("bulk_purchase_signal", {})
+    if not isinstance(bulk, dict) or "type" not in bulk or "estimated_qty" not in bulk:
+        return False
+    barrier = data.get("switching_barrier", {})
+    if not isinstance(barrier, dict) or "level" not in barrier or "reason" not in barrier:
+        return False
+    amp = data.get("amplification_intent", {})
+    if not isinstance(amp, dict) or "intent" not in amp or "context" not in amp:
+        return False
+    openness = data.get("review_sentiment_openness", {})
+    if not isinstance(openness, dict) or "open" not in openness or "condition" not in openness:
+        return False
+
     return True
 
 
@@ -365,12 +459,12 @@ async def validate_mode(pool, llm, skill_content: str, n: int, tier: str, max_to
         print(f"  Review: {(row['review_text'] or '')[:120]}...")
 
         if extraction:
-            print(f"  Keys present: {sorted(extraction.keys())}")
+            print(f"  Keys present ({len(extraction.keys())}/32): {sorted(extraction.keys())}")
             missing = set(_REQUIRED_KEYS) - set(extraction.keys())
             if missing:
                 print(f"  MISSING: {missing}")
 
-            # Highlight key fields
+            # Section A highlights
             if "feature_requests" in extraction:
                 print(f"  Feature requests: {extraction['feature_requests']}")
             if "quotable_phrases" in extraction:
@@ -390,6 +484,26 @@ async def validate_mode(pool, llm, skill_content: str, n: int, tier: str, max_to
                 bc = extraction["buyer_context"]
                 if isinstance(bc, dict):
                     print(f"  Buyer: {bc.get('use_case','?')} / {bc.get('buyer_type','?')} / {bc.get('price_sentiment','?')}")
+
+            # Section B highlights
+            if "expertise_level" in extraction:
+                print(f"  Expertise: {extraction['expertise_level']} | Frustration: {extraction.get('frustration_threshold','?')}")
+            if "profession_hint" in extraction:
+                print(f"  Profession: {extraction['profession_hint']}")
+            if "consequence_severity" in extraction:
+                print(f"  Consequence: {extraction['consequence_severity']} | Replacement: {extraction.get('replacement_behavior','?')}")
+
+            # Section C highlights
+            if "brand_loyalty_depth" in extraction:
+                print(f"  Brand loyalty: {extraction['brand_loyalty_depth']} | Trajectory: {extraction.get('sentiment_trajectory','?')}")
+            if "safety_flag" in extraction:
+                sf = extraction["safety_flag"]
+                if isinstance(sf, dict) and sf.get("flagged"):
+                    print(f"  SAFETY FLAG: {sf.get('description','?')}")
+            if "amplification_intent" in extraction:
+                ai = extraction["amplification_intent"]
+                if isinstance(ai, dict) and ai.get("intent") != "quiet":
+                    print(f"  Amplification: {ai.get('intent','?')} -- {ai.get('context','?')}")
         else:
             print("  No extraction returned (LLM failure)")
 
@@ -451,7 +565,7 @@ async def main():
     parser.add_argument("--tier", type=str, default="all", choices=["1", "2", "3", "all"],
                         help="ASIN tier filter: 1=50+, 2=20-49, 3=10-19, all=no filter")
     parser.add_argument("--max-attempts", type=int, default=3, help="Max attempts before marking deep_failed")
-    parser.add_argument("--max-tokens", type=int, default=1024, help="Max tokens for LLM output")
+    parser.add_argument("--max-tokens", type=int, default=2048, help="Max tokens for LLM output")
     parser.add_argument("--limit", type=int, default=0, help="Max total reviews to process (0=unlimited)")
     parser.add_argument("--validate", type=int, default=0, metavar="N",
                         help="Process N reviews, print formatted results, exit")
