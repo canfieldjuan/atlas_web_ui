@@ -2,11 +2,19 @@
 Reddit parser for B2B review scraping.
 
 Uses Reddit's public JSON search endpoints (no API key needed).
-No proxy required -- Reddit is permissive with rate limits.
+
+Reddit blocked subreddit-scoped search.json in late 2025.  The working
+approach is the global search endpoint with a ``subreddit:`` qualifier:
+``www.reddit.com/search.json?q=<term>+subreddit:<sub>&…``
+
+Fallback: ``old.reddit.com/r/<sub>/search.json`` still works intermittently.
+
+No proxy required -- Reddit rate-limits but doesn't hard-block.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from urllib.parse import quote_plus
@@ -46,9 +54,11 @@ class RedditParser:
         vendor_encoded = quote_plus(target.vendor_name)
 
         for sub in subreddits[:target.max_pages]:
+            # Primary: global search with subreddit qualifier
+            # (subreddit-scoped /r/{sub}/search.json returns 403 since late 2025)
             url = (
-                f"https://www.reddit.com/r/{sub}/search.json"
-                f"?q={vendor_encoded}&sort=new&limit=25&t=year&restrict_sr=on"
+                f"https://www.reddit.com/search.json"
+                f"?q={vendor_encoded}+subreddit:{sub}&sort=new&limit=25&t=year"
             )
 
             try:
@@ -61,8 +71,32 @@ class RedditParser:
                 )
                 pages_scraped += 1
 
+                # Fallback to old.reddit.com on 403/429
+                if resp.status_code in (403, 429):
+                    logger.debug(
+                        "Reddit global search %d for r/%s, trying old.reddit.com",
+                        resp.status_code, sub,
+                    )
+                    await asyncio.sleep(3)
+                    fallback_url = (
+                        f"https://old.reddit.com/r/{sub}/search.json"
+                        f"?q={vendor_encoded}&sort=new&limit=25&t=year&restrict_sr=on"
+                    )
+                    resp = await client.get(
+                        fallback_url,
+                        domain=_DOMAIN,
+                        referer=f"https://old.reddit.com/r/{sub}/",
+                        sticky_session=False,
+                        prefer_residential=False,
+                    )
+
                 if resp.status_code != 200:
                     errors.append(f"r/{sub}: HTTP {resp.status_code}")
+                    continue
+
+                ct = resp.headers.get("content-type", "")
+                if "json" not in ct:
+                    errors.append(f"r/{sub}: non-JSON response ({ct[:40]})")
                     continue
 
                 data = resp.json()
@@ -111,7 +145,7 @@ class RedditParser:
                         "reviewer_industry": None,
                         "reviewed_at": reviewed_at,
                         "raw_metadata": {
-                            "subreddit": sub,
+                            "subreddit": post.get("subreddit", sub),
                             "score": post.get("score", 0),
                             "num_comments": post.get("num_comments", 0),
                             "upvote_ratio": post.get("upvote_ratio", 0),

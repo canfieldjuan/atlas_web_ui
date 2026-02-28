@@ -61,14 +61,25 @@ class G2Parser:
                 pages_scraped += 1
 
                 if resp.status_code == 403:
-                    errors.append(f"Page {page}: blocked (403) -- Cloudflare challenge")
+                    errors.append(f"Page {page}: blocked (403) -- CAPTCHA challenge")
                     break
                 if resp.status_code != 200:
                     errors.append(f"Page {page}: HTTP {resp.status_code}")
                     continue
 
+                # Guard against non-HTML responses (CDN error pages, JSON errors)
+                ct = resp.headers.get("content-type", "")
+                if "html" not in ct and "text" not in ct:
+                    errors.append(f"Page {page}: unexpected content-type ({ct[:40]})")
+                    break
+
                 page_reviews = _parse_page(resp.text, target, seen_ids)
                 if not page_reviews:
+                    if page == 1:
+                        logger.warning(
+                            "G2 page 1 returned 0 reviews for %s — selectors may be stale",
+                            target.product_slug,
+                        )
                     break  # No more reviews
 
                 reviews.extend(page_reviews)

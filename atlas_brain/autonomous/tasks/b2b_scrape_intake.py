@@ -9,6 +9,7 @@ Runs as an autonomous task on a configurable interval (default 1 hour).
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid as _uuid
 from datetime import datetime, timezone
@@ -19,6 +20,56 @@ from ...storage.database import get_db_pool
 from ...storage.models import ScheduledTask
 
 logger = logging.getLogger("atlas.autonomous.tasks.b2b_scrape_intake")
+
+
+# Common date formats returned by review site parsers
+_DATE_FORMATS = [
+    "%Y-%m-%dT%H:%M:%S%z",         # ISO 8601 with tz
+    "%Y-%m-%dT%H:%M:%S",           # ISO 8601 no tz
+    "%Y-%m-%d",                      # ISO date only
+    "%b %d, %Y",                     # "Feb 15, 2024"
+    "%B %d, %Y",                     # "February 15, 2024"
+    "%d %b %Y",                      # "15 Feb 2024"
+    "%d %B %Y",                      # "15 February 2024"
+    "%m/%d/%Y",                      # "02/15/2024"
+    "%d/%m/%Y",                      # "15/02/2024" (EU)
+]
+
+
+def _parse_date(raw: Any) -> datetime | None:
+    """Parse a date string in various formats.  Returns None on failure."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+
+    # Fast path: ISO 8601 (most common from APIs)
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        pass
+
+    # Try common formats
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            continue
+
+    # Last resort: extract "Month Day, Year" or similar from longer text
+    m = re.search(
+        r"(\w+ \d{1,2},?\s+\d{4})",
+        s,
+    )
+    if m:
+        for fmt in ("%b %d, %Y", "%B %d, %Y", "%b %d %Y", "%B %d %Y"):
+            try:
+                return datetime.strptime(m.group(1), fmt).replace(tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                continue
+
+    return None
 
 
 def _make_dedup_key(
@@ -202,14 +253,7 @@ async def _insert_reviews(pool, reviews: list[dict], batch_id: str) -> int:
     """Insert reviews into b2b_reviews with dedup. Returns count of new inserts."""
     rows = []
     for r in reviews:
-        reviewed_at_ts = None
-        if r.get("reviewed_at"):
-            try:
-                reviewed_at_ts = datetime.fromisoformat(
-                    str(r["reviewed_at"]).replace("Z", "+00:00")
-                )
-            except (ValueError, TypeError):
-                pass
+        reviewed_at_ts = _parse_date(r.get("reviewed_at"))
 
         dedup_key = _make_dedup_key(
             r["source"], r["vendor_name"],

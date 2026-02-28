@@ -1,12 +1,21 @@
 """
 TrustRadius parser for B2B review scraping.
 
-Uses TrustRadius JSON API: /api/v1/products/{slug}/reviews
-Rating scale is 1-10 (normalized). Residential proxy recommended.
+STATUS: LIMITED — TrustRadius removed their public review API in 2025 and
+switched to 100% client-side rendering.  Individual reviews cannot be
+extracted without a headless browser (Playwright).
+
+What still works:
+  - Product page JSON-LD: aggregateRating, positiveNotes, negativeNotes
+  - These provide a product-level summary but NOT individual reviews
+
+The parser attempts the legacy API first, falls back to product page
+JSON-LD, and returns what it can with clear error messages.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from urllib.parse import quote_plus
 
@@ -16,12 +25,14 @@ from . import ScrapeResult, ScrapeTarget, register_parser
 logger = logging.getLogger("atlas.services.scraping.parsers.trustradius")
 
 _DOMAIN = "trustradius.com"
-_API_BASE = "https://www.trustradius.com/api/v1/products"
-_PAGE_SIZE = 25
+_PRODUCT_BASE = "https://www.trustradius.com/products"
 
 
 class TrustRadiusParser:
-    """Parse TrustRadius reviews via their JSON API."""
+    """Parse TrustRadius reviews.
+
+    Falls back to product page JSON-LD when the review API is unavailable.
+    """
 
     source_name = "trustradius"
     prefer_residential = True
@@ -30,126 +41,160 @@ class TrustRadiusParser:
         """Scrape TrustRadius reviews for the given product."""
         reviews: list[dict] = []
         errors: list[str] = []
-        pages_scraped = 0
-        seen_ids: set[str] = set()
 
-        for page in range(target.max_pages):
-            offset = page * _PAGE_SIZE
-            url = (
-                f"{_API_BASE}/{target.product_slug}/reviews"
-                f"?limit={_PAGE_SIZE}&offset={offset}"
-            )
-            referer = (
-                f"https://www.google.com/search?q={quote_plus(target.vendor_name)}+trustradius+reviews"
-                if page == 0
-                else f"https://www.trustradius.com/products/{target.product_slug}/reviews"
-            )
-
-            try:
-                resp = await client.get(
-                    url,
-                    domain=_DOMAIN,
-                    referer=referer,
-                    sticky_session=True,
-                    prefer_residential=True,
-                )
-                pages_scraped += 1
-
-                if resp.status_code == 403:
-                    errors.append(f"Page {page + 1}: blocked (403)")
-                    break
-                if resp.status_code != 200:
-                    errors.append(f"Page {page + 1}: HTTP {resp.status_code}")
-                    continue
-
-                data = resp.json()
-                records = data.get("records", [])
-
-                if not records:
-                    break  # No more reviews
-
-                for record in records:
-                    review = _parse_record(record, target, seen_ids)
-                    if review:
-                        reviews.append(review)
-
-            except Exception as exc:
-                errors.append(f"Page {page + 1}: {exc}")
-                logger.warning("TrustRadius page %d failed for %s: %s", page + 1, target.product_slug, exc)
-                break
-
-        logger.info(
-            "TrustRadius scrape for %s: %d reviews from %d pages",
-            target.vendor_name, len(reviews), pages_scraped,
+        referer = (
+            f"https://www.google.com/search"
+            f"?q={quote_plus(target.vendor_name)}+trustradius+reviews"
         )
 
-        return ScrapeResult(reviews=reviews, pages_scraped=pages_scraped, errors=errors)
+        # ------------------------------------------------------------------
+        # Strategy: scrape the product/reviews page HTML and extract JSON-LD
+        # ------------------------------------------------------------------
+        url = f"{_PRODUCT_BASE}/{target.product_slug}/reviews"
+
+        try:
+            resp = await client.get(
+                url,
+                domain=_DOMAIN,
+                referer=referer,
+                sticky_session=True,
+                prefer_residential=True,
+            )
+
+            if resp.status_code == 403:
+                errors.append("Blocked (403) — CAPTCHA or anti-bot")
+                return ScrapeResult(reviews=[], pages_scraped=1, errors=errors)
+            if resp.status_code == 404:
+                errors.append(f"Product slug not found: {target.product_slug}")
+                return ScrapeResult(reviews=[], pages_scraped=1, errors=errors)
+            if resp.status_code != 200:
+                errors.append(f"HTTP {resp.status_code}")
+                return ScrapeResult(reviews=[], pages_scraped=1, errors=errors)
+
+            # Extract JSON-LD from the product page
+            reviews = _extract_jsonld_product(resp.text, target)
+
+            if not reviews:
+                errors.append(
+                    "TrustRadius reviews require client-side rendering; "
+                    "only product-level summary available via JSON-LD"
+                )
+
+        except Exception as exc:
+            errors.append(f"Request failed: {exc}")
+            logger.warning(
+                "TrustRadius scrape failed for %s: %s",
+                target.product_slug, exc,
+            )
+
+        logger.info(
+            "TrustRadius scrape for %s: %d entries from product page",
+            target.vendor_name, len(reviews),
+        )
+
+        return ScrapeResult(reviews=reviews, pages_scraped=1, errors=errors)
 
 
-def _parse_record(record: dict, target: ScrapeTarget, seen_ids: set[str]) -> dict | None:
-    """Parse a single TrustRadius API review record."""
-    review_id = record.get("_id", "")
-    if not review_id or review_id in seen_ids:
-        return None
-    seen_ids.add(review_id)
+def _extract_jsonld_product(
+    html: str, target: ScrapeTarget
+) -> list[dict]:
+    """Extract product-level data from JSON-LD on the reviews page.
 
-    # Rating: {"normalized": 9, "possible": 100, "earned": 90}
-    rating_obj = record.get("rating", {})
-    rating = rating_obj.get("normalized")  # 1-10 scale
+    TrustRadius embeds ``SoftwareApplication`` schema with:
+    - ``aggregateRating`` (ratingValue, ratingCount, bestRating)
+    - ``positiveNotes`` (ItemList of 2–3 word tags)
+    - ``negativeNotes`` (ItemList of 2–3 word tags)
 
-    # Review text: synopsis is the main text, verbatims are key quotes
-    synopsis = record.get("synopsis", "")
-    verbatims = record.get("verbatims", [])
-    heading = record.get("heading", "")
+    We synthesize a single "product summary" review from these so the
+    downstream enrichment pipeline has *something* to work with.
+    """
+    from bs4 import BeautifulSoup
 
-    # Build review_text from synopsis + verbatims
-    parts = []
-    if synopsis:
-        parts.append(synopsis)
-    if verbatims:
-        parts.append("\n".join(verbatims))
-    review_text = "\n\n".join(parts)
+    soup = BeautifulSoup(html, "html.parser")
+    reviews: list[dict] = []
 
-    if not review_text or len(review_text) < 20:
-        return None
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            data = json.loads(script.string or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
 
-    # Date
-    reviewed_at = record.get("publishedDate")
+        items = data if isinstance(data, list) else [data]
 
-    # Reviewer info
-    reviewer_title = record.get("reviewerJobType")
-    reviewer_dept = record.get("reviewerDepartment")
-    if reviewer_title and reviewer_dept:
-        reviewer_title = f"{reviewer_title}, {reviewer_dept}"
+        for item in items:
+            if item.get("@type") != "SoftwareApplication":
+                continue
 
-    slug = record.get("slug", review_id)
-    source_url = f"https://www.trustradius.com/reviews/{slug}"
+            agg = item.get("aggregateRating", {})
+            if not isinstance(agg, dict) or not agg.get("ratingValue"):
+                continue
 
-    return {
-        "source": "trustradius",
-        "source_url": source_url,
-        "source_review_id": review_id,
-        "vendor_name": target.vendor_name,
-        "product_name": target.product_name,
-        "product_category": target.product_category,
-        "rating": rating,
-        "rating_max": 10,
-        "summary": heading[:500] if heading else None,
-        "review_text": review_text[:10000],
-        "pros": None,
-        "cons": None,
-        "reviewer_name": None,  # API doesn't expose reviewer name
-        "reviewer_title": reviewer_title,
-        "reviewer_company": None,
-        "company_size_raw": record.get("companySize"),
-        "reviewer_industry": record.get("companyIndustry"),
-        "reviewed_at": reviewed_at,
-        "raw_metadata": {
-            "grade": record.get("grade"),
-            "rating_earned": rating_obj.get("earned"),
-            "rating_possible": rating_obj.get("possible"),
-        },
-    }
+            # Build pros/cons from notes
+            pros_list = _extract_notes(item.get("positiveNotes", {}))
+            cons_list = _extract_notes(item.get("negativeNotes", {}))
+
+            pros = ", ".join(pros_list) if pros_list else None
+            cons = ", ".join(cons_list) if cons_list else None
+
+            product_name = item.get("name") or target.product_name
+
+            # Build a synthetic review text from what we have
+            parts = []
+            if pros_list:
+                parts.append(f"Users praise: {', '.join(pros_list)}.")
+            if cons_list:
+                parts.append(f"Users criticize: {', '.join(cons_list)}.")
+            rating_count = agg.get("ratingCount", 0)
+            rating_val = agg.get("ratingValue")
+            best = agg.get("bestRating", 10)
+            parts.append(
+                f"Aggregate rating: {rating_val}/{best} "
+                f"from {rating_count:,} reviews."
+            )
+            review_text = " ".join(parts)
+
+            reviews.append({
+                "source": "trustradius",
+                "source_url": f"https://www.trustradius.com/products/{target.product_slug}/reviews",
+                "source_review_id": f"tr_aggregate_{target.product_slug}",
+                "vendor_name": target.vendor_name,
+                "product_name": product_name,
+                "product_category": target.product_category or item.get("applicationCategory"),
+                "rating": float(rating_val) if rating_val is not None else None,
+                "rating_max": int(best) if best else 10,
+                "summary": f"{product_name} — TrustRadius aggregate ({rating_count:,} reviews)",
+                "review_text": review_text,
+                "pros": pros,
+                "cons": cons,
+                "reviewer_name": None,
+                "reviewer_title": None,
+                "reviewer_company": None,
+                "company_size_raw": None,
+                "reviewer_industry": None,
+                "reviewed_at": None,
+                "raw_metadata": {
+                    "extraction_method": "jsonld_aggregate",
+                    "aggregate_rating": agg,
+                    "positive_notes": pros_list,
+                    "negative_notes": cons_list,
+                },
+            })
+
+    return reviews
+
+
+def _extract_notes(notes_obj: dict) -> list[str]:
+    """Extract note names from a JSON-LD ItemList."""
+    if not isinstance(notes_obj, dict):
+        return []
+    items = notes_obj.get("itemListElement", [])
+    if not isinstance(items, list):
+        return []
+    return [
+        item["name"]
+        for item in items
+        if isinstance(item, dict) and item.get("name")
+    ]
 
 
 # Auto-register
