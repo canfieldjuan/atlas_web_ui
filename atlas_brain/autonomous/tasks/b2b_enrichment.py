@@ -286,6 +286,14 @@ def _validate_enrichment(result: dict) -> bool:
             return False
         reviewer_ctx["decision_maker"] = coerced
 
+    # Boolean coercion: would_recommend (used in ::boolean cast in vendor_churn_scores)
+    if "would_recommend" in result:
+        coerced = _coerce_bool(result["would_recommend"])
+        if coerced is None:
+            logger.warning("would_recommend unrecognizable bool: %r -- rejecting", result["would_recommend"])
+            return False
+        result["would_recommend"] = coerced
+
     # Type check: competitors_mentioned must be list; items must be dicts with "name"
     competitors = result.get("competitors_mentioned")
     if competitors is not None and not isinstance(competitors, list):
