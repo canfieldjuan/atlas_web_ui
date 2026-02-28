@@ -86,6 +86,29 @@ def _format_customer_context(ctx: CustomerContext) -> str:
                 sent = sent.strftime("%Y-%m-%d")
             parts.append(f"  - {sent}: {subj}")
 
+    # SMS history
+    if ctx.sms_messages:
+        parts.append(f"\nSMS history ({len(ctx.sms_messages)}):")
+        for sms in ctx.sms_messages[:5]:
+            date = sms.get("created_at", "")
+            if isinstance(date, datetime):
+                date = date.strftime("%Y-%m-%d %H:%M")
+            direction = sms.get("direction", "?")
+            body_preview = (sms.get("body") or "")[:80]
+            parts.append(f"  - [{direction}] {date}: {body_preview}")
+
+    # Invoices
+    if ctx.invoices:
+        outstanding = [i for i in ctx.invoices if i.get("status") in ("sent", "partial", "overdue")]
+        outstanding_total = sum(float(i.get("amount_due", 0)) for i in outstanding)
+        overdue = [i for i in outstanding if i.get("status") == "overdue"]
+        parts.append(f"\nInvoices ({len(ctx.invoices)} total, {len(outstanding)} outstanding = ${outstanding_total:.2f}, {len(overdue)} overdue):")
+        for inv in ctx.invoices[:5]:
+            inv_date = inv.get("issue_date", "")
+            parts.append(
+                f"  - {inv.get('invoice_number', '?')} | ${inv.get('total_amount', 0):.2f} | {inv.get('status', '?')} | {inv_date}"
+            )
+
     return "\n".join(parts)
 
 

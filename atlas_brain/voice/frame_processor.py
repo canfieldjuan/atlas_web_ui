@@ -68,7 +68,7 @@ class FrameProcessor:
         conversation_silence_ratio: float = 0.15,
         conversation_asr_holdoff_ms: int = 1000,
         wake_buffer_frames: int = 5,
-        asr_quiet_limit: int = 10,
+        asr_quiet_limit: int = 5,
         on_early_silence: Optional[Callable[[str], None]] = None,
         conversation_early_silence_ms: int = 600,
     ):
@@ -407,7 +407,10 @@ class FrameProcessor:
                         self._early_silence_fired = False
                         self._recording_silence_frames = 0
                     self.segmenter.reset()
-                    # Widen thresholds for conversation recording
+                    # Widen thresholds for conversation recording.
+                    # min_speech_frames=0: VAD already confirmed speech above,
+                    # so don't require additional non-preroll speech frames
+                    # (preroll frames are is_preroll=True and don't count).
                     self.segmenter.update_thresholds(
                         max_command_seconds=self._conversation_max_command_seconds,
                         silence_ms=self._conversation_silence_ms,
@@ -415,6 +418,7 @@ class FrameProcessor:
                         window_frames=self._conversation_window_frames,
                         silence_ratio=self._conversation_silence_ratio,
                         asr_holdoff_ms=self._conversation_asr_holdoff_ms,
+                        min_speech_frames=0,
                     )
 
                     # Connect streaming ASR if available
@@ -458,7 +462,10 @@ class FrameProcessor:
                     self._early_silence_fired = False
                     self._recording_silence_frames = 0
                 self.segmenter.reset()
-                # Widen thresholds for conversation recording
+                # Widen thresholds for conversation recording.
+                # min_speech_frames=0: wake word itself is evidence of speech
+                # intent — don't gate on non-preroll speech frames (preroll
+                # frames don't count, causing infinite hang on false wakes).
                 self.segmenter.update_thresholds(
                     max_command_seconds=self._conversation_max_command_seconds,
                     silence_ms=self._conversation_silence_ms,
@@ -466,6 +473,7 @@ class FrameProcessor:
                     window_frames=self._conversation_window_frames,
                     silence_ratio=self._conversation_silence_ratio,
                     asr_holdoff_ms=self._conversation_asr_holdoff_ms,
+                    min_speech_frames=0,
                 )
                 self._connect_streaming_asr("for wake word re-engagement")
 
@@ -490,9 +498,12 @@ class FrameProcessor:
             # Stop feeding frames after _asr_quiet_limit frames with no new
             # partial -- trailing silence causes transcript oscillation as the
             # model re-evaluates its hypothesis on an ever-growing silent tail.
+            # Also stop when VAD is confident we're in silence (silence_counter
+            # >= 3) to prevent HVAC/background noise from being transcribed.
             asr_active = False
             if self._streaming_active and self.streaming_asr_client is not None:
-                if self._asr_quiet_frames < self._asr_quiet_limit:
+                vad_says_silence = self.segmenter.silence_counter >= 3
+                if self._asr_quiet_frames < self._asr_quiet_limit and not vad_says_silence:
                     try:
                         partial = self.streaming_asr_client.send_audio(frame_bytes)
                         # Only log when partial changes to reduce noise.

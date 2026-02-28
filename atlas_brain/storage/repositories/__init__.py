@@ -19,6 +19,8 @@ from .vision import VisionEventRepository, get_vision_event_repo
 from .speaker import SpeakerRepository, get_speaker_repo
 from .identity import IdentityRepository, get_identity_repo
 from .scheduled_task import ScheduledTaskRepository, get_scheduled_task_repo
+from .sms_message import SMSMessageRepository, get_sms_message_repo
+from .invoice import InvoiceRepository, get_invoice_repo
 
 __all__ = [
     "AppointmentRepository",
@@ -47,4 +49,8 @@ __all__ = [
     "get_identity_repo",
     "ScheduledTaskRepository",
     "get_scheduled_task_repo",
+    "SMSMessageRepository",
+    "get_sms_message_repo",
+    "InvoiceRepository",
+    "get_invoice_repo",
 ]

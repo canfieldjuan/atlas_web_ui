@@ -23,9 +23,15 @@ from .autonomous import router as autonomous_router
 from .presence import router as presence_router
 from .proactive_actions import router as proactive_actions_router
 from .email_drafts import router as email_drafts_router
+from .email_actions import router as email_actions_router
+from .inbox_rules import router as inbox_rules_router
+from .invoicing import router as invoicing_router
 from .contacts import router as contacts_router
+from .reasoning import router as reasoning_router
 from .security import router as security_router
 from .system import router as system_router
+from .b2b_reviews import router as b2b_reviews_router
+from .b2b_scrape import router as b2b_scrape_router
 
 # Main router that aggregates all sub-routers
 router = APIRouter()
@@ -49,6 +55,12 @@ router.include_router(autonomous_router)
 router.include_router(presence_router)
 router.include_router(proactive_actions_router)
 router.include_router(email_drafts_router)
+router.include_router(email_actions_router)
+router.include_router(inbox_rules_router)
+router.include_router(invoicing_router)
 router.include_router(contacts_router)
+router.include_router(reasoning_router)
 router.include_router(security_router)
 router.include_router(system_router)
+router.include_router(b2b_reviews_router)
+router.include_router(b2b_scrape_router)

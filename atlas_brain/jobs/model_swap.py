@@ -53,6 +53,14 @@ async def run_model_swap_day() -> dict[str, Any]:
     if not loaded_day:
         logger.warning("Day swap: failed to pre-warm %s", day)
 
+    # Also pre-warm the intent fallback classifier (phi3:mini etc.)
+    fallback = settings.intent_router.llm_fallback_model
+    loaded_fallback = False
+    if settings.intent_router.llm_fallback_enabled and fallback:
+        loaded_fallback = await load_model(fallback, base_url, keep_alive="2h")
+        if not loaded_fallback:
+            logger.warning("Day swap: failed to pre-warm fallback classifier %s", fallback)
+
     result = {
         "direction": "day",
         "day_model": day,
@@ -60,6 +68,7 @@ async def run_model_swap_day() -> dict[str, Any]:
         "night_was_running": night_was_running,
         "unloaded_night": unloaded_night,
         "loaded_day": loaded_day,
+        "loaded_fallback": loaded_fallback,
     }
     logger.info("Model swap DAY complete: %s", result)
     return result

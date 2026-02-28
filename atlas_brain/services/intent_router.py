@@ -81,30 +81,67 @@ ROUTE_DEFINITIONS: dict[str, list[str]] = {
         "send the cleaning estimate to the customer", "what emails did I send today",
         "show me my email history", "check what emails were sent this week",
     ],
+    "email_query": [
+        "what was my last email about", "check my inbox",
+        "any new emails today", "read my latest email",
+        "what did John say in his email", "was that email angry",
+        "what's the tone of the last email", "summarize my recent emails",
+        "did I get a reply from Sarah", "any emails from the contractor",
+        "what emails came in today", "show me my unread emails",
+        "reply to John's last email", "respond to that email",
+        "let's reply to the last email", "send a reply to Sarah",
+    ],
+    "call_person": [
+        "call John", "call the customer", "give them a call",
+        "phone Sarah", "ring the client", "make a call to the plumber",
+        "call back the customer who emailed", "dial the office",
+        "I need to call someone", "can you call this person for me",
+    ],
     "calendar_write": [
         "add a meeting to my calendar for Thursday", "create a calendar event for Tuesday",
         "schedule a meeting with the team on Friday", "put a dentist appointment on my calendar",
         "create an event called team standup", "add lunch with Maria to my calendar",
+        "block out Thursday afternoon for the contractor", "mark my calendar for the 5th",
+        "set up a meeting with John tomorrow at 2", "log a call with the client for Monday",
+        "add my son's game to the calendar Saturday morning", "put a block on my calendar for project work",
+        "create an appointment at 3pm Friday", "add an event for the team lunch next week",
     ],
     "booking": [
         "book an appointment for next Monday", "schedule an appointment with the barber",
         "I need to book an appointment", "set up an appointment for a haircut",
         "make an appointment for next week", "I want to schedule a visit",
+        "can you get me in for a cleaning next Tuesday", "find me an opening this week",
+        "get me in with the dentist", "put me down for an appointment Thursday",
+        "can you book me in for Friday afternoon", "I need to get on the schedule",
+        "book me a slot tomorrow", "get me an appointment as soon as possible",
     ],
     "cancel_booking": [
         "cancel my appointment", "I need to cancel my booking",
         "cancel the appointment for Thursday", "I want to cancel",
         "remove my appointment", "cancel the booking",
+        "drop the appointment tomorrow", "I can't make my appointment",
+        "clear my Thursday appointment", "call off the meeting",
+        "delete the appointment on Friday", "scratch that booking",
+        "I won't be able to make it to my appointment", "get rid of my appointment this week",
     ],
     "reschedule_booking": [
         "reschedule my appointment", "move my appointment to Friday",
         "change my booking to next week", "I need to reschedule",
         "can we move the appointment", "reschedule the booking",
+        "push my appointment back to next week", "bump the appointment to Wednesday",
+        "can you move the appointment to a later time", "shift my booking earlier",
+        "postpone my appointment", "change the time of my appointment",
+        "I need to push back my appointment", "move the meeting up an hour",
     ],
     "get_time": [
         "what time is it", "what's the current time right now",
         "tell me the time right now", "what's today's date",
         "what day of the week is it",
+        "what's the time", "do you have the time",
+        "how late is it", "what month are we in",
+        "check the time for me", "what time is it currently",
+        "what's the current date", "is it morning or afternoon",
+        "what year is it", "tell me today's date",
     ],
     "get_weather": [
         "what's the weather like", "how's the weather today", "is it going to rain",
@@ -119,26 +156,49 @@ ROUTE_DEFINITIONS: dict[str, list[str]] = {
         "what's on my calendar today", "do I have any meetings today",
         "show me my schedule", "what events do I have this week",
         "am I free this afternoon", "any appointments today",
+        "what do I have coming up", "what's my day look like",
+        "am I busy tomorrow", "do I have anything scheduled this week",
+        "what are my plans for Friday", "check my calendar",
+        "what meetings do I have tomorrow", "do I have anything going on tonight",
+        "what's on the schedule for this week",
     ],
     "list_reminders": [
         "show my reminders", "what reminders do I have", "list all my alarms",
         "what are my active reminders", "do I have any reminders",
+        "read me my reminders", "check my reminders",
+        "any upcoming reminders", "what alarms do I have set",
+        "are there any reminders pending", "what's on my reminder list",
+        "how many reminders do I have", "tell me what reminders are set",
+        "show me all pending reminders",
     ],
     "get_traffic": [
         "how's the traffic", "what's the traffic like to work",
         "how long is my commute", "traffic conditions to downtown",
+        "is the highway clear", "how bad is traffic right now",
+        "how long will it take to get home", "is there a lot of traffic",
+        "how's the drive to work today", "any accidents on the road",
+        "should I leave now to beat traffic", "traffic report",
+        "is it a good time to drive", "how long to get downtown from here",
+        "what's the drive time looking like",
     ],
     "get_location": [
         "what is my GPS location", "what are my coordinates",
         "what city am I in", "what is my address",
         "track my phone location", "find my phone",
         "what is my geo location", "show my location on a map",
+        "where am I located right now", "give me my current location",
+        "what neighborhood am I in", "can you find my location",
+        "ping my location", "what's my exact location",
     ],
     "where_am_i": [
         "where am I", "what room am I in", "which room is this",
         "what room am I in right now", "what space am I in",
         "which room does the system think I am in",
         "detect my room",
+        "what part of the house am I in", "what area am I in",
+        "where does atlas think I am", "am I in the bedroom",
+        "tell me what room I'm in", "what zone am I in",
+        "can you detect where I am in the house", "identify my current room",
     ],
     "who_is_here": [
         "who is here", "who is in the office", "is anyone home",
@@ -153,6 +213,10 @@ ROUTE_DEFINITIONS: dict[str, list[str]] = {
         "push a notification to my phone about the groceries",
         "notify my phone that dinner is ready",
         "send an alert to my phone saying I need to leave",
+        "ping my phone", "flash a notification saying the meeting starts soon",
+        "buzz my phone with a reminder", "pop up a notification about dinner",
+        "shoot me a notification", "send a heads up to my phone",
+        "alert me on my phone that the package arrived", "notify me right now",
     ],
     "show_camera": [
         "show me the camera feed on the left monitor",
@@ -162,6 +226,10 @@ ROUTE_DEFINITIONS: dict[str, list[str]] = {
         "put the backyard camera on screen",
         "close the camera viewer", "hide the camera viewer window",
         "close all camera viewer windows",
+        "bring up the front door camera", "let me see the driveway camera",
+        "switch to the backyard camera", "open the camera view",
+        "show me what the front camera sees", "pull up the live feed",
+        "display the security camera on screen", "view the garage camera",
     ],
     "security": [
         "list my cameras", "show me all the cameras",
@@ -173,6 +241,14 @@ ROUTE_DEFINITIONS: dict[str, list[str]] = {
         "show me the security zones", "list all security zones",
         "arm the home security", "disarm the home security",
         "activate the security system", "deactivate the security system",
+    ],
+    "crm_query": [
+        "look up John", "is John in the CRM", "find customer Smith",
+        "search for a contact named Mary", "look up the customer",
+        "do we have a customer named Garcia", "find the contact",
+        "who is John Smith in our system", "search contacts for Sarah",
+        "check if we have a record for them", "look up that customer",
+        "pull up the customer file", "find the client",
     ],
     "detection_query": [
         "who was at the front door", "who is at the back door",
@@ -233,6 +309,8 @@ ROUTE_TO_ACTION: dict[str, tuple[str, Optional[str]]] = {
     "device_command": ("device_command", None),
     "reminder":       ("tool_use", "set_reminder"),
     "email":          ("tool_use", "send_email"),
+    "email_query":    ("tool_use", "search_inbox"),
+    "call_person":    ("tool_use", "make_call"),
     "calendar_write": ("tool_use", "create_calendar_event"),
     "booking":            ("tool_use", "book_appointment"),
     "cancel_booking":     ("tool_use", "cancel_appointment"),
@@ -249,6 +327,7 @@ ROUTE_TO_ACTION: dict[str, tuple[str, Optional[str]]] = {
     "show_camera":   ("tool_use", "show_camera_feed"),
     "security":         ("device_command", None),
     "presence":         ("device_command", None),
+    "crm_query":        ("tool_use", "search_contacts"),
     "detection_query":  ("tool_use", "get_person_at_location"),
     "motion_query":     ("tool_use", "get_motion_events"),
     "digest":           ("tool_use", "run_digest"),
@@ -259,16 +338,48 @@ ROUTE_TO_ACTION: dict[str, tuple[str, Optional[str]]] = {
 ROUTE_TO_WORKFLOW: dict[str, str] = {
     "reminder": "reminder",
     "email": "email",
+    "email_query": "email_query",
     "calendar_write": "calendar",
     "booking": "booking",
     "cancel_booking": "booking",
     "reschedule_booking": "booking",
     "security": "security",
     "presence": "presence",
+    "call_person": "call",
 }
 
 # Valid route names for LLM fallback validation
 _VALID_ROUTES = set(ROUTE_TO_ACTION.keys()) | set(ROUTE_TO_WORKFLOW.keys())
+
+# Routes where we should attempt lightweight entity extraction on the
+# semantic path (no LLM call — just strip known verb/preposition prefixes).
+_ENTITY_ROUTES = {
+    "crm_query", "call_person", "email", "email_query", "detection_query",
+}
+_ENTITY_STRIP_RE = re.compile(
+    r"^(?:look\s*up|find|search\s*(?:for)?|check|pull\s*up|call|phone|ring"
+    r"|email|send\s*(?:an?\s*)?(?:email|message)\s*to|reply\s*to"
+    r"|who\s*(?:was|is)|is\s*there|any)\s+",
+    re.IGNORECASE,
+)
+_ENTITY_SUFFIX_RE = re.compile(
+    r"\s+(?:in\s+(?:the\s+)?(?:crm|system|database|contacts?|our\s+records?)"
+    r"|on\s+(?:the\s+)?(?:camera|phone|door)"
+    r"|(?:at|from)\s+(?:the\s+)?(?:front|back|side)\s*(?:door|gate)?)\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _extract_entity_from_query(query: str, route: str) -> Optional[str]:
+    """Best-effort entity extraction without LLM — strip known prefixes/suffixes."""
+    if route not in _ENTITY_ROUTES:
+        return None
+    text = _ENTITY_STRIP_RE.sub("", query).strip()
+    text = _ENTITY_SUFFIX_RE.sub("", text).strip().rstrip("?.!")
+    # Only return if we actually extracted something meaningful
+    if text and text.lower() != query.lower() and len(text) < 60:
+        return text
+    return None
 
 
 def _word_to_num(word: str) -> Optional[int]:
@@ -313,17 +424,36 @@ def _extract_detection_params(query: str) -> dict:
     return {}
 
 
+def _extract_entity_tool_params(query: str, route_name: str) -> dict:
+    """Map extracted entity to tool params for entity-bearing routes.
+
+    Makes routes like crm_query fast-path eligible by populating the
+    tool's required params from the entity name.
+    """
+    entity = _extract_entity_from_query(query, route_name)
+    if not entity:
+        return {}
+    if route_name == "crm_query":
+        return {"query": entity}
+    if route_name == "email_query":
+        return {"query": entity}
+    return {}
+
+
 def _extract_temporal_params(query: str, route_name: str) -> dict:
     """Extract route-specific params from the query text.
 
     Weather/traffic: days_ahead for forecast queries.
     Digest: digest_type keyword inference (security, device, email).
     Detection: location keyword extraction.
+    CRM/email queries: entity name to search query.
     """
     if route_name == "digest":
         return _extract_digest_params(query)
     if route_name == "detection_query":
         return _extract_detection_params(query)
+    if route_name in ("crm_query", "email_query"):
+        return _extract_entity_tool_params(query, route_name)
     if route_name not in ("get_weather", "get_traffic"):
         return {}
     q = query.lower()
@@ -405,13 +535,19 @@ class SemanticIntentRouter:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._embedder.load)
 
-        # Compute centroids for each route
+        # Batch all route phrases into a single embed call (1 progress bar, not 26)
+        all_phrases: list[str] = []
+        route_slices: list[tuple[str, int, int]] = []
         for route_name, utterances in ROUTE_DEFINITIONS.items():
-            embeddings = await loop.run_in_executor(
-                None, self._embedder.embed_batch, utterances,
-            )
-            # Centroid = mean of normalized vectors, re-normalized
-            centroid = embeddings.mean(axis=0)
+            start_idx = len(all_phrases)
+            all_phrases.extend(utterances)
+            route_slices.append((route_name, start_idx, len(all_phrases)))
+
+        all_embeddings = await loop.run_in_executor(
+            None, self._embedder.embed_batch, all_phrases,
+        )
+        for route_name, s, e in route_slices:
+            centroid = all_embeddings[s:e].mean(axis=0)
             centroid = centroid / np.linalg.norm(centroid)
             self._route_centroids[route_name] = centroid
 
@@ -442,9 +578,17 @@ class SemanticIntentRouter:
         )
         self._embedder.load()
 
+        # Batch all route phrases into a single embed call (1 progress bar, not 26)
+        all_phrases: list[str] = []
+        route_slices: list[tuple[str, int, int]] = []
         for route_name, utterances in ROUTE_DEFINITIONS.items():
-            embeddings = self._embedder.embed_batch(utterances)
-            centroid = embeddings.mean(axis=0)
+            start_idx = len(all_phrases)
+            all_phrases.extend(utterances)
+            route_slices.append((route_name, start_idx, len(all_phrases)))
+
+        all_embeddings = self._embedder.embed_batch(all_phrases)
+        for route_name, s, e in route_slices:
+            centroid = all_embeddings[s:e].mean(axis=0)
             centroid = centroid / np.linalg.norm(centroid)
             self._route_centroids[route_name] = centroid
 
@@ -515,8 +659,6 @@ class SemanticIntentRouter:
                 )
 
         # If above threshold, use semantic result.
-        # NOTE: entity_name is NOT extracted on this path (no LLM call).
-        # Entity graph traversal only fires when LLM fallback runs.
         if similarity >= threshold:
             route_time = (time.time() - start) * 1000
             action_category, tool_name = ROUTE_TO_ACTION.get(
@@ -528,6 +670,7 @@ class SemanticIntentRouter:
             )
             tool_params = _extract_temporal_params(query, route_name)
             fast_ok = (tool_name in PARAMETERLESS_TOOLS if tool_name else False) or bool(tool_params)
+            entity = _extract_entity_from_query(query, route_name)
             return IntentRouteResult(
                 action_category=action_category,
                 raw_label=route_name,
@@ -536,6 +679,7 @@ class SemanticIntentRouter:
                 tool_name=tool_name,
                 fast_path_ok=fast_ok,
                 tool_params=tool_params,
+                entity_name=entity,
             )
 
         # LLM fallback -- skip for very short queries (1-2 words) where the
@@ -671,6 +815,8 @@ class SemanticIntentRouter:
                 "- device_command: control a physical device (lights, TV, thermostat)\n"
                 "- reminder: set a reminder or alarm\n"
                 "- email: send an email\n"
+                "- email_query: check inbox, read emails, ask about email content or tone, reply to received email\n"
+                "- call_person: call or phone a person\n"
                 "- calendar_write: create a calendar event\n"
                 "- booking/cancel_booking/reschedule_booking: manage appointments\n"
                 "- get_time: ask for current time\n"
@@ -683,17 +829,23 @@ class SemanticIntentRouter:
                 "- notification: send a push notification\n"
                 "- show_camera: show a camera feed\n"
                 "- security/presence: arm security or check presence sensors\n"
-                "- detection_query: ask who was at a door/camera, check for people\n"
+                "- crm_query: look up a customer or contact by name in the database, check if someone is in the CRM, find a contact's phone or email\n"
+                "- detection_query: ask who was physically seen by a security camera or at a door, check camera footage for people\n"
                 "- motion_query: ask about motion or movement on cameras\n"
                 "- digest: request a briefing, summary, or status report\n"
                 "- conversation: general chat, personal questions, opinions, "
                 "knowledge recall, or anything not matching above\n"
                 f'User query: "{query}"\n'
-                'Respond with ONLY JSON: {"route": "<name>", "confidence": <0.0-1.0>, '
-                '"entity": "<main subject name or null>"}'
+                'Respond with ONLY a single JSON object, nothing else:\n'
+                '{"route": "<name>", "confidence": <0.0-1.0>, '
+                '"entity": "<main subject name or null>"}\n'
+                'Do NOT add explanations, examples, or markdown fencing.'
             )
 
-            messages = [Message(role="user", content=prompt)]
+            messages = [
+                Message(role="system", content="You are a JSON classifier. Output raw JSON only. Never add commentary."),
+                Message(role="user", content=prompt),
+            ]
 
             result = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
@@ -718,6 +870,13 @@ class SemanticIntentRouter:
                 think_end = response_text.rfind("</think>")
                 if think_end >= 0:
                     response_text = response_text[think_end + 8:].strip()
+
+            # Extract first JSON object (some models add explanation after)
+            brace_start = response_text.find("{")
+            if brace_start >= 0:
+                brace_end = response_text.find("}", brace_start)
+                if brace_end >= 0:
+                    response_text = response_text[brace_start:brace_end + 1]
 
             parsed = json.loads(response_text)
             route = parsed.get("route", "")

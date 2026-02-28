@@ -25,6 +25,8 @@ from ...utils.cuda_lock import get_cuda_lock
 from .booking import run_booking_workflow, BOOKING_WORKFLOW_TYPE
 from .reminder import run_reminder_workflow, REMINDER_WORKFLOW_TYPE
 from .email import run_email_workflow, EMAIL_WORKFLOW_TYPE
+from .email_query import run_email_query_workflow, EMAIL_QUERY_WORKFLOW_TYPE
+from .call import run_call_workflow, CALL_WORKFLOW_TYPE
 from .calendar import run_calendar_workflow, CALENDAR_WORKFLOW_TYPE
 from .security import run_security_workflow, SECURITY_WORKFLOW_TYPE
 from .presence import run_presence_workflow, PRESENCE_WORKFLOW_TYPE
@@ -66,6 +68,8 @@ _WORKFLOW_NAMES: dict[str, str] = {
     "calendar": "calendar event",
     "booking": "appointment",
     "email": "email draft",
+    "email_query": "email query",
+    "call": "phone call",
     "security": "security alert",
     "presence": "presence tracking",
 }
@@ -238,9 +242,24 @@ async def classify_and_route(
 
     classify_ms = (time.perf_counter() - start_time) * 1000
 
-    # 1. Workflow routes (reminder, email, calendar_write, booking) -> start_workflow
-    if route_name in ROUTE_TO_WORKFLOW and confidence >= threshold:
+    # 1. Workflow routes (reminder, email, calendar_write, booking, call) -> start_workflow
+    # In conversation mode, use a lower confidence floor so borderline workflow
+    # intents (e.g. "call Juan" at 0.40) don't fall through to the general LLM
+    # tool path. Applies to all workflow routes -- during active conversation the
+    # user is more likely issuing commands than chatting about them.
+    in_conversation = state.get("runtime_context", {}).get("in_conversation_mode", False)
+    workflow_conf_floor = (
+        settings.intent_router.conversation_workflow_confidence_floor
+        if in_conversation else threshold
+    )
+    if route_name in ROUTE_TO_WORKFLOW and confidence >= workflow_conf_floor:
         workflow_type = ROUTE_TO_WORKFLOW[route_name]
+        if in_conversation and confidence < threshold:
+            logger.info(
+                "Conversation workflow breakout: using lower confidence floor "
+                "(%.2f < %.2f) for %s",
+                confidence, threshold, workflow_type,
+            )
         logger.info(
             "Route -> start_workflow/%s (conf=%.2f, %.0fms)",
             workflow_type, confidence, classify_ms,
@@ -716,6 +735,20 @@ async def continue_workflow(state: AtlasAgentState) -> AtlasAgentState:
             session_id=session_id,
             llm=get_llm("email"),
         )
+    elif workflow_type == EMAIL_QUERY_WORKFLOW_TYPE:
+        result = await run_email_query_workflow(
+            input_text=input_text,
+            session_id=session_id,
+            speaker_id=state.get("speaker_id"),
+            llm=get_llm("email_query"),
+        )
+    elif workflow_type == CALL_WORKFLOW_TYPE:
+        result = await run_call_workflow(
+            input_text=input_text,
+            session_id=session_id,
+            speaker_id=state.get("speaker_id"),
+            llm=get_llm("call"),
+        )
     elif workflow_type == CALENDAR_WORKFLOW_TYPE:
         result = await run_calendar_workflow(
             input_text=input_text,
@@ -800,6 +833,20 @@ async def start_workflow(state: AtlasAgentState) -> AtlasAgentState:
             input_text=input_text,
             session_id=session_id,
             llm=get_llm("email"),
+        )
+    elif workflow_type == EMAIL_QUERY_WORKFLOW_TYPE:
+        result = await run_email_query_workflow(
+            input_text=input_text,
+            session_id=session_id,
+            speaker_id=state.get("speaker_id"),
+            llm=get_llm("email_query"),
+        )
+    elif workflow_type == CALL_WORKFLOW_TYPE:
+        result = await run_call_workflow(
+            input_text=input_text,
+            session_id=session_id,
+            speaker_id=state.get("speaker_id"),
+            llm=get_llm("call"),
         )
     elif workflow_type == CALENDAR_WORKFLOW_TYPE:
         result = await run_calendar_workflow(
@@ -1037,6 +1084,10 @@ async def _generate_llm_response(
     # Add current user message
     messages.append(Message(role="user", content=input_text))
 
+    # Conversation mode may override max_tokens for both tool-calling and
+    # plain chat paths (higher limit for multi-tool responses).
+    conv_max_tokens = state.get("runtime_context", {}).get("conversation_max_tokens")
+
     # Use tool calling for conversation turns when LLM supports it.
     # This gives the model access to MCP tools (CRM, calendar, email,
     # telephony) so it can answer queries like "search for contact Smith"
@@ -1049,7 +1100,7 @@ async def _generate_llm_response(
             ewt_result = await execute_with_tools(
                 llm=llm,
                 messages=messages,
-                max_tokens=200,
+                max_tokens=conv_max_tokens if conv_max_tokens else 200,
                 temperature=0.7,
             )
             response = ewt_result.get("response", "").strip()
@@ -1113,7 +1164,7 @@ async def _generate_llm_response(
         async with cuda_lock:
             llm_result = llm.chat(
                 messages=messages,
-                max_tokens=100,
+                max_tokens=conv_max_tokens if conv_max_tokens else 100,
                 temperature=0.7,
             )
         response = llm_result.get("response", "").strip()
@@ -1511,19 +1562,32 @@ class AtlasAgentGraph:
                 metadata=user_metadata,
             )
 
-            # Store assistant turn
+            # Store assistant turn (sanitize to prevent tool-call artifacts
+            # from poisoning conversation history on subsequent turns).
             response = state.get("response")
             if response:
+                from ...memory.service import _sanitize_for_storage
                 await self._memory.add_turn(
                     session_id=session_id,
                     role="assistant",
-                    content=response,
+                    content=_sanitize_for_storage(response),
                     speaker_uuid=runtime_ctx.get("speaker_uuid"),
                     turn_type=turn_type,
                     metadata=assistant_metadata,
                 )
 
             logger.debug("Stored conversation turns for session %s", session_id)
+
+            # Emit event for reasoning agent
+            from ...reasoning.producers import emit_if_enabled
+            await emit_if_enabled(
+                "voice.turn_completed", "atlas_agent",
+                {"session_id": session_id, "turn_type": turn_type,
+                 "intent": intent_str,
+                 "input_preview": (state.get("input") or "")[:200]},
+                entity_type="contact" if runtime_ctx.get("speaker_uuid") else None,
+                entity_id=runtime_ctx.get("speaker_uuid"),
+            )
 
         except Exception as e:
             logger.warning("Failed to store conversation turn: %s", e)

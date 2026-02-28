@@ -87,6 +87,38 @@ class AnthropicLLM(BaseModelService):
         for msg in messages:
             if msg.role == "system":
                 system_parts.append(msg.content)
+            elif msg.role == "assistant" and getattr(msg, "tool_calls", None):
+                # Anthropic: assistant tool calls are content blocks
+                content_blocks = []
+                if msg.content:
+                    content_blocks.append({"type": "text", "text": msg.content})
+                for call in msg.tool_calls:
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": call.get("id", ""),
+                        "name": call["function"]["name"],
+                        "input": call["function"].get("arguments", {}),
+                    })
+                api_messages.append({"role": "assistant", "content": content_blocks})
+            elif msg.role == "tool":
+                # Anthropic: tool results are user messages with tool_result blocks
+                tool_result_block = {
+                    "type": "tool_result",
+                    "tool_use_id": getattr(msg, "tool_call_id", "") or "",
+                    "content": msg.content,
+                }
+                # Coalesce consecutive tool results into one user message
+                if (
+                    api_messages
+                    and api_messages[-1]["role"] == "user"
+                    and isinstance(api_messages[-1]["content"], list)
+                ):
+                    api_messages[-1]["content"].append(tool_result_block)
+                else:
+                    api_messages.append({
+                        "role": "user",
+                        "content": [tool_result_block],
+                    })
             else:
                 api_messages.append({"role": msg.role, "content": msg.content})
 
@@ -185,6 +217,7 @@ class AnthropicLLM(BaseModelService):
                     text_parts.append(block.text)
                 elif block.type == "tool_use":
                     normalized_calls.append({
+                        "id": block.id,
                         "function": {
                             "name": block.name,
                             "arguments": block.input if isinstance(block.input, dict) else {},

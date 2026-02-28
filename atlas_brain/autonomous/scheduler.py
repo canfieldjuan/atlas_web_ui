@@ -375,6 +375,95 @@ class TaskScheduler:
                 "mailbox": "[Gmail]/Sent Mail",
             },
         },
+        {
+            "name": "email_auto_approve",
+            "description": "Auto-approve and send eligible email drafts after delay window",
+            "task_type": "builtin",
+            "schedule_type": "interval",
+            "interval_seconds": 120,
+            "timeout_seconds": 60,
+            "metadata": {"builtin_handler": "email_auto_approve"},
+        },
+        {
+            "name": "email_stale_check",
+            "description": "Detect stale drafts, unactioned emails, and unanswered estimates",
+            "task_type": "builtin",
+            "schedule_type": "interval",
+            "interval_seconds": None,  # resolved from config
+            "timeout_seconds": 120,
+            "metadata": {"builtin_handler": "email_stale_check"},
+        },
+        {
+            "name": "invoice_overdue_check",
+            "description": "Daily scan for overdue invoices, mark and notify",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "0 9 * * *",
+            "timeout_seconds": 60,
+            "metadata": {
+                "builtin_handler": "invoice_overdue_check",
+                "synthesis_skill": "invoicing/overdue_notification",
+            },
+        },
+        {
+            "name": "invoice_payment_reminders",
+            "description": "Daily payment reminders for overdue invoices",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "0 10 * * *",
+            "timeout_seconds": 120,
+            "metadata": {
+                "builtin_handler": "invoice_payment_reminders",
+                "synthesis_skill": "invoicing/payment_reminder",
+            },
+        },
+        {
+            "name": "monthly_invoice_generation",
+            "description": "Generate and send monthly invoices from calendar cleaning events",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "0 8 1 * *",
+            "timeout_seconds": 300,
+            "metadata": {
+                "builtin_handler": "monthly_invoice_generation",
+                "notify_priority": "high",
+            },
+        },
+        {
+            "name": "reasoning_tick",
+            "description": "Polling safety net for reasoning agent missed events",
+            "task_type": "builtin",
+            "schedule_type": "interval",
+            "interval_seconds": 300,
+            "timeout_seconds": 120,
+            "metadata": {
+                "builtin_handler": "reasoning_tick",
+            },
+        },
+        {
+            "name": "reasoning_reflection",
+            "description": "Proactive cross-domain pattern detection and recommendations",
+            "task_type": "builtin",
+            "schedule_type": "cron",
+            "cron_expression": "0 9,13,17,21 * * *",
+            "timeout_seconds": 300,
+            "metadata": {
+                "builtin_handler": "reasoning_reflection",
+            },
+        },
+        {
+            "name": "weather_traffic_alerts",
+            "description": "Proactive weather (NWS) and traffic (TomTom) alert monitoring",
+            "task_type": "builtin",
+            "schedule_type": "interval",
+            "interval_seconds": None,  # resolved from settings.alert_monitor.check_interval_seconds
+            "timeout_seconds": 60,
+            "enabled": True,
+            "metadata": {
+                "builtin_handler": "weather_traffic_alerts",
+                "notify": False,
+            },
+        },
     ]
 
     async def _ensure_default_tasks(self) -> None:
@@ -393,9 +482,28 @@ class TaskScheduler:
             _interval_overrides = {
                 "email_draft": settings.email_draft.schedule_interval_seconds,
                 "email_intake": settings.email_intake.interval_seconds,
+                "email_stale_check": settings.email_stale_check.interval_seconds,
+                "weather_traffic_alerts": settings.alert_monitor.check_interval_seconds,
             }
 
-            for task_def in self._DEFAULT_TASKS:
+            # Merge pipeline interval overrides from registry
+            try:
+                from ..pipelines import get_pipeline_interval_overrides, get_pipeline_default_tasks, resolve_config_value
+
+                for task_name, config_key in get_pipeline_interval_overrides().items():
+                    val = resolve_config_value(config_key)
+                    if val is not None:
+                        _interval_overrides[task_name] = val
+
+                # Add pipeline task definitions
+                pipeline_tasks = get_pipeline_default_tasks()
+            except Exception:
+                logger.debug("Pipeline registry not available for seeding", exc_info=True)
+                pipeline_tasks = []
+
+            all_task_defs = list(self._DEFAULT_TASKS) + pipeline_tasks
+
+            for task_def in all_task_defs:
                 # Apply runtime interval override if the definition left it as None
                 if task_def.get("interval_seconds") is None and task_def["name"] in _interval_overrides:
                     task_def = {**task_def, "interval_seconds": _interval_overrides[task_def["name"]]}
@@ -471,7 +579,20 @@ class TaskScheduler:
             interval_overrides = {
                 "email_draft": settings.email_draft.schedule_interval_seconds,
                 "email_intake": settings.email_intake.interval_seconds,
+                "email_stale_check": settings.email_stale_check.interval_seconds,
+                "weather_traffic_alerts": settings.alert_monitor.check_interval_seconds,
             }
+
+            # Merge pipeline interval overrides
+            try:
+                from ..pipelines import get_pipeline_interval_overrides, resolve_config_value
+
+                for task_name, config_key in get_pipeline_interval_overrides().items():
+                    val = resolve_config_value(config_key)
+                    if val is not None:
+                        interval_overrides[task_name] = val
+            except Exception:
+                logger.debug("Pipeline interval overrides unavailable", exc_info=True)
 
             for task_name, desired_interval in interval_overrides.items():
                 task = await repo.get_by_name(task_name)
@@ -492,7 +613,19 @@ class TaskScheduler:
                 "model_swap_day": settings.llm.model_swap_day_cron,
                 "model_swap_night": settings.llm.model_swap_night_cron,
                 "email_graph_sync": "0 1 * * *",
+                "reasoning_reflection": settings.reasoning.reflection_cron,
             }
+
+            # Merge pipeline cron overrides
+            try:
+                from ..pipelines import get_pipeline_cron_overrides, resolve_config_value as _rcv
+
+                for task_name, config_key in get_pipeline_cron_overrides().items():
+                    val = _rcv(config_key)
+                    if val is not None:
+                        cron_overrides[task_name] = val
+            except Exception:
+                logger.debug("Pipeline cron overrides unavailable", exc_info=True)
 
             for task_name, desired_cron in cron_overrides.items():
                 task = await repo.get_by_name(task_name)

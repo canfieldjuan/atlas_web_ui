@@ -102,7 +102,7 @@ async def list_calendars() -> str:
         ]
         return json.dumps(result, indent=2)
     except Exception as exc:
-        logger.error("list_calendars error: %s", exc)
+        logger.exception("list_calendars error")
         return json.dumps({"error": str(exc)})
 
 
@@ -147,7 +147,7 @@ async def list_events(
         ]
         return json.dumps(result, indent=2)
     except Exception as exc:
-        logger.error("list_events error: %s", exc)
+        logger.exception("list_events error")
         return json.dumps({"error": str(exc)})
 
 
@@ -184,7 +184,7 @@ async def get_event(event_id: str, calendar_id: Optional[str] = None) -> str:
             indent=2,
         )
     except Exception as exc:
-        logger.error("get_event error: %s", exc)
+        logger.exception("get_event error")
         return json.dumps({"error": str(exc)})
 
 
@@ -240,7 +240,7 @@ async def create_event(
             indent=2,
         )
     except Exception as exc:
-        logger.error("create_event error: %s", exc)
+        logger.exception("create_event error")
         return json.dumps({"error": str(exc)})
 
 
@@ -300,7 +300,7 @@ async def update_event(
             indent=2,
         )
     except Exception as exc:
-        logger.error("update_event error: %s", exc)
+        logger.exception("update_event error")
         return json.dumps({"error": str(exc)})
 
 
@@ -321,7 +321,7 @@ async def delete_event(event_id: str, calendar_id: Optional[str] = None) -> str:
         success = await _provider().delete_event(event_id, calendar_id=calendar_id)
         return json.dumps({"deleted": success, "event_id": event_id})
     except Exception as exc:
-        logger.error("delete_event error: %s", exc)
+        logger.exception("delete_event error")
         return json.dumps({"error": str(exc)})
 
 
@@ -421,7 +421,7 @@ async def find_free_slots(
             indent=2,
         )
     except Exception as exc:
-        logger.error("find_free_slots error: %s", exc)
+        logger.exception("find_free_slots error")
         return json.dumps({"error": str(exc)})
 
 
@@ -451,28 +451,23 @@ async def sync_appointment(
     from ..services.calendar_provider import CalendarEvent
 
     try:
-        import asyncpg
+        from ..storage.database import get_db_pool
 
-        from ..config import settings as cfg
-
-        conn = await asyncpg.connect(cfg.database_url)
-        try:
-            row = await conn.fetchrow(
-                """
-                SELECT id, customer_name, customer_address, start_time, end_time,
-                       notes, calendar_event_id
-                FROM appointments
-                WHERE id = $1
-                """,
-                appointment_id,
-            )
-        finally:
-            await conn.close()
+        pool = get_db_pool()
+        row = await pool.fetchrow(
+            """
+            SELECT id, customer_name, customer_address, start_time, end_time,
+                   notes, calendar_event_id
+            FROM appointments
+            WHERE id = $1
+            """,
+            appointment_id,
+        )
 
         if not row:
             return json.dumps({"error": "Appointment not found", "appointment_id": appointment_id})
 
-        summary = f"Cleaning – {row['customer_name']}"
+        summary = f"Cleaning - {row['customer_name']}"
         description = row["notes"] or ""
         location = row["customer_address"] or ""
         existing_event_id = row["calendar_event_id"]
@@ -498,15 +493,11 @@ async def sync_appointment(
 
         # Write calendar_event_id back to DB so appointments stay linked
         if result.uid:
-            conn = await asyncpg.connect(cfg.database_url)
-            try:
-                await conn.execute(
-                    "UPDATE appointments SET calendar_event_id = $1 WHERE id = $2",
-                    result.uid,
-                    appointment_id,
-                )
-            finally:
-                await conn.close()
+            await pool.execute(
+                "UPDATE appointments SET calendar_event_id = $1 WHERE id = $2",
+                result.uid,
+                appointment_id,
+            )
 
         return json.dumps(
             {
@@ -520,7 +511,7 @@ async def sync_appointment(
             indent=2,
         )
     except Exception as exc:
-        logger.error("sync_appointment error: %s", exc)
+        logger.exception("sync_appointment error")
         return json.dumps({"error": str(exc)})
 
 
@@ -536,9 +527,10 @@ if __name__ == "__main__":
     sse_mode = "--sse" in sys.argv
     if sse_mode:
         from ..config import settings
+        from .auth import run_sse_with_auth
 
         mcp.settings.host = settings.mcp.host
         mcp.settings.port = settings.mcp.calendar_port
-        mcp.run(transport="sse")
+        run_sse_with_auth(mcp, settings.mcp.host, settings.mcp.calendar_port)
     else:
         mcp.run(transport="stdio")

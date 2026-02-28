@@ -29,6 +29,7 @@ class OllamaLLM(BaseModelService):
         model: str = "qwen3:14b",
         base_url: str = "http://localhost:11434",
         think: bool = False,
+        timeout: int = 120,
         **kwargs: Any,
     ) -> None:
         """
@@ -38,12 +39,14 @@ class OllamaLLM(BaseModelService):
             model: Ollama model name (e.g., "qwen3:14b", "qwen3:8b")
             base_url: Ollama API base URL
             think: Enable thinking/reasoning mode (cloud models may require this)
+            timeout: HTTP timeout in seconds (increase for cloud relay models)
             **kwargs: Additional options
         """
         super().__init__(name="ollama", model_id=model)
         self.model = model
         self.base_url = base_url.rstrip("/")
         self._think = think
+        self._timeout = float(timeout)
         self._client: httpx.AsyncClient | None = None
         self._sync_client: httpx.Client | None = None
         self._loaded = False
@@ -72,8 +75,8 @@ class OllamaLLM(BaseModelService):
 
     def load(self) -> None:
         """Initialize HTTP clients."""
-        self._sync_client = httpx.Client(timeout=120.0)
-        self._client = httpx.AsyncClient(timeout=120.0)
+        self._sync_client = httpx.Client(timeout=self._timeout)
+        self._client = httpx.AsyncClient(timeout=self._timeout)
         self._loaded = True
         logger.info("Ollama LLM initialized: model=%s, url=%s", self.model, self.base_url)
 

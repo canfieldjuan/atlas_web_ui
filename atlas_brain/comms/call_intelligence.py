@@ -27,6 +27,64 @@ from ..storage.repositories.call_transcript import get_call_transcript_repo
 logger = logging.getLogger("atlas.comms.call_intelligence")
 
 
+# ---------------------------------------------------------------------------
+# Call intent -> business intent normalization
+# ---------------------------------------------------------------------------
+
+_CALL_INTENT_MAP = {
+    "estimate_request": "estimate_request",
+    "booking": "estimate_request",
+    "reschedule": "reschedule",
+    "cancel": "reschedule",
+    "complaint": "complaint",
+    "inquiry": "info_admin",
+    "follow_up": "info_admin",
+}
+# Everything else (personal_call, wrong_number, spam, other) -> None
+
+_INTENT_LABELS = {
+    "estimate_request": "Estimate Request",
+    "reschedule": "Reschedule",
+    "complaint": "Complaint",
+    "info_admin": "Info/Admin",
+}
+
+_CALL_INTENT_NTFY = {
+    "estimate_request": {
+        "buttons": [
+            ("http", "Book Appointment", "/api/v1/comms/call-actions/{id}/book"),
+            ("http", "Approve Plan", "/api/v1/comms/call-actions/{id}/approve-plan"),
+        ],
+        "tags": "phone,dollar",
+        "priority": "high",
+    },
+    "reschedule": {
+        "buttons": [
+            ("http", "Book Appointment", "/api/v1/comms/call-actions/{id}/book"),
+            ("http", "Send SMS", "/api/v1/comms/call-actions/{id}/sms"),
+        ],
+        "tags": "phone,calendar",
+        "priority": "high",
+    },
+    "complaint": {
+        "buttons": [
+            ("http", "Approve Plan", "/api/v1/comms/call-actions/{id}/approve-plan"),
+            ("http", "Reject", "/api/v1/comms/call-actions/{id}/reject-plan"),
+        ],
+        "tags": "phone,rotating_light",
+        "priority": "urgent",
+    },
+    "info_admin": {
+        "buttons": [
+            ("http", "Send SMS", "/api/v1/comms/call-actions/{id}/sms"),
+            ("http", "Approve Plan", "/api/v1/comms/call-actions/{id}/approve-plan"),
+        ],
+        "tags": "phone,information_source",
+        "priority": "default",
+    },
+}
+
+
 async def process_call_recording(
     call_sid: str,
     recording_url: str,
@@ -124,6 +182,18 @@ async def process_call_recording(
             "Step 4/7 OK: Extracted data for %s: summary=%s actions=%d",
             call_sid, summary[:80], len(proposed_actions),
         )
+
+        # Cross-reference invoice numbers mentioned in transcript/summary
+        try:
+            from .invoice_detector import extract_invoice_numbers
+            inv_nums = extract_invoice_numbers(transcript + " " + (summary or ""))
+            if inv_nums:
+                extracted_data["invoice_numbers_mentioned"] = inv_nums
+                await repo.update_extraction(transcript_id, summary, extracted_data, proposed_actions)
+                logger.info("Invoice numbers found in call %s: %s", call_sid, inv_nums)
+        except Exception as inv_e:
+            logger.debug("Invoice detection skipped for %s: %s", call_sid, inv_e)
+
     except Exception as e:
         logger.error("Step 4/7 FAIL: Extraction for %s: %s", call_sid, e)
         await _safe_update_status(repo, transcript_id, "error", f"Extraction: {e}")
@@ -131,13 +201,17 @@ async def process_call_recording(
 
     # Step 5: Link to CRM contact
     contact_id = None
+    is_new_lead = False
     try:
-        contact_id = await _link_to_crm(
+        contact_id, is_new_lead = await _link_to_crm(
             repo, transcript_id, call_sid,
             from_number, context_id, extracted_data, summary,
         )
         if contact_id:
-            logger.info("Step 5/7 OK: Linked call %s to contact %s", call_sid, contact_id)
+            logger.info(
+                "Step 5/7 OK: Linked call %s to contact %s (new_lead=%s)",
+                call_sid, contact_id, is_new_lead,
+            )
         else:
             logger.info("Step 5/7 OK: No CRM link created for %s (insufficient data)", call_sid)
     except Exception as e:
@@ -171,6 +245,7 @@ async def process_call_recording(
             from_number, duration_seconds,
             summary, extracted_data, action_plan,
             business_context,
+            is_new_lead=is_new_lead,
         )
         logger.info("Step 7/7 OK: Notification sent for %s", call_sid)
     except Exception as e:
@@ -190,28 +265,32 @@ async def _download_recording(recording_url: str) -> bytes:
     if not url.endswith(".wav"):
         url = url.rstrip("/") + ".wav"
 
-    auth = None
-    # REST-initiated recordings live under the Twilio-compatible API, which
-    # authenticates with project_id + api_token (the same creds the SDK uses).
-    # Fabric API credentials (account_sid + recording_token) are for a
-    # different API surface and will 401 on REST recording URLs.
-    account_sid = comms_settings.signalwire_project_id or comms_settings.signalwire_account_sid
-    recording_token = comms_settings.signalwire_api_token or comms_settings.signalwire_recording_token
-    if account_sid and recording_token:
-        auth = httpx.BasicAuth(account_sid, recording_token)
-    logger.info("Recording download: url=%s auth_user=%s", url, account_sid[:12] + "..." if account_sid else "none")
+    # LaML recording URLs authenticate with account_sid + recording_token.
+    # project_id + api_token returns 200 with an empty body, so try
+    # account_sid first and fall back to project_id on failure/empty.
+    primary = (comms_settings.signalwire_account_sid, comms_settings.signalwire_recording_token)
+    fallback = (comms_settings.signalwire_project_id, comms_settings.signalwire_api_token)
+
+    auth_pairs = []
+    if primary[0] and primary[1]:
+        auth_pairs.append(primary)
+    if fallback[0] and fallback[1] and fallback != primary:
+        auth_pairs.append(fallback)
 
     cfg = settings.call_intelligence
     async with httpx.AsyncClient(timeout=cfg.asr_timeout, follow_redirects=True) as client:
-        resp = await client.get(url, auth=auth)
-        if resp.status_code == 401 and auth:
-            # First credential set failed; try the other one.
-            alt_sid = comms_settings.signalwire_account_sid or ""
-            alt_tok = comms_settings.signalwire_recording_token or ""
-            if alt_sid and alt_tok and alt_sid != account_sid:
-                logger.info("Recording download 401, retrying with account_sid auth")
-                alt_auth = httpx.BasicAuth(alt_sid, alt_tok)
-                resp = await client.get(url, auth=alt_auth)
+        resp = None
+        for sid, tok in auth_pairs:
+            auth = httpx.BasicAuth(sid, tok)
+            logger.info("Recording download: url=%s auth_user=%s", url, sid[:12] + "...")
+            resp = await client.get(url, auth=auth)
+            if resp.status_code == 200 and len(resp.content) > 100:
+                break  # Got real audio data
+            logger.info("Recording download attempt: status=%d size=%d, trying next auth", resp.status_code, len(resp.content))
+
+        if resp is None:
+            raise RuntimeError("No SignalWire credentials configured for recording download")
+
         logger.info("Recording download response: status=%d size=%d", resp.status_code, len(resp.content))
         resp.raise_for_status()
         return resp.content
@@ -423,10 +502,11 @@ async def _link_to_crm(
     context_id: str,
     extracted_data: dict,
     summary: str,
-) -> Optional[str]:
+) -> tuple[Optional[str], bool]:
     """Look up or create a CRM contact from call extraction data.
 
-    Returns the contact_id if linked, or None if there wasn't enough data.
+    Returns (contact_id, is_new_lead) tuple.  is_new_lead is True when the
+    contact was freshly created (no prior CRM record).
     Fail-open: errors are logged but never block the pipeline.
     """
     from ..services.crm_provider import get_crm_provider
@@ -435,20 +515,20 @@ async def _link_to_crm(
     pool = get_db_pool()
     if not pool.is_initialized:
         logger.warning("CRM link skipped for call %s: DB pool not initialized", call_sid)
-        return None
+        return None, False
 
     phone = extracted_data.get("customer_phone") or from_number
-    email = extracted_data.get("customer_email")
+    email_addr = extracted_data.get("customer_email")
     name = extracted_data.get("customer_name")
 
-    if not phone and not email:
-        return None
+    if not phone and not email_addr:
+        return None, False
 
     crm = get_crm_provider()
     contact = await crm.find_or_create_contact(
         full_name=name or phone or "Unknown Caller",
         phone=phone,
-        email=email,
+        email=email_addr,
         address=extracted_data.get("address"),
         business_context_id=context_id,
         contact_type="customer",
@@ -457,20 +537,24 @@ async def _link_to_crm(
     )
     if not contact.get("id"):
         logger.warning("CRM contact created but has no ID: %s", contact)
-        return None
+        return None, False
     contact_id = str(contact["id"])
+    is_new_lead = contact.get("_was_created", False)
 
     # Link the call transcript to the contact
     await repo.link_contact(transcript_id, contact_id)
 
-    # Log the interaction
+    # Log the interaction with normalized business intent
+    raw_intent = extracted_data.get("intent", "")
+    business_intent = _CALL_INTENT_MAP.get(raw_intent)
     await crm.log_interaction(
         contact_id=contact_id,
         interaction_type="call",
         summary=summary or f"Inbound call from {from_number}",
+        intent=business_intent,
     )
 
-    return contact_id
+    return contact_id, is_new_lead
 
 
 async def _notify_call_summary(
@@ -483,8 +567,13 @@ async def _notify_call_summary(
     extracted_data: dict,
     proposed_actions: list,
     business_context=None,
+    is_new_lead: bool = False,
 ) -> None:
-    """Send ntfy notification with the call summary."""
+    """Send ntfy notification with the call summary.
+
+    Uses intent-aware buttons when a business intent is available,
+    otherwise falls through to existing action-based buttons.
+    """
     if not settings.call_intelligence.notify_enabled:
         return
     if not settings.alerts.ntfy_enabled:
@@ -513,9 +602,10 @@ async def _notify_call_summary(
     if phone:
         lines.append(f"Phone: {phone}")
 
-    intent = extracted_data.get("intent")
-    if intent:
-        lines.append(f"Intent: {intent.replace('_', ' ').title()}")
+    raw_intent = extracted_data.get("intent")
+    business_intent = _CALL_INTENT_MAP.get(raw_intent or "") if raw_intent else None
+    if raw_intent:
+        lines.append(f"Intent: {raw_intent.replace('_', ' ').title()}")
 
     services = extracted_data.get("services_mentioned")
     if services:
@@ -556,44 +646,78 @@ async def _notify_call_summary(
 
     message = "\n".join(lines)
 
-    # Build ntfy action buttons
-    action_parts = []
-    if has_plan:
-        # Single "Approve Plan" button that executes all actions
-        action_parts.append(
-            f"http, Approve Plan, {api_url}/api/v1/comms/call-actions/{transcript_id}/approve-plan, "
-            f"method=POST, clear=true"
-        )
-        action_parts.append(
-            f"http, Reject, {api_url}/api/v1/comms/call-actions/{transcript_id}/reject-plan, "
-            f"method=POST, clear=true"
-        )
-    else:
-        # Fallback: individual action buttons (legacy format)
-        for action in proposed_actions:
-            atype = action.get("type") or action.get("action", "none")
-            if atype in ("book_estimate", "create_appointment", "book_appointment"):
-                action_parts.append(
-                    f"http, Book Appointment, {api_url}/api/v1/comms/call-actions/{transcript_id}/book, "
-                    f"method=POST, clear=true"
-                )
-            elif atype in ("send_sms", "send_followup", "schedule_callback"):
-                action_parts.append(
-                    f"http, Send SMS, {api_url}/api/v1/comms/call-actions/{transcript_id}/sms, "
-                    f"method=POST, clear=true"
-                )
-    action_parts.append(
-        f"view, View Transcript, {api_url}/api/v1/comms/call-actions/{transcript_id}/view"
-    )
-    actions_header = "; ".join(action_parts)
+    # Build ntfy action buttons -- intent-aware when available
+    tid = str(transcript_id)
+    intent_cfg = _CALL_INTENT_NTFY.get(business_intent) if business_intent else None
 
-    title = f"{biz_name}: Action Plan" if has_plan else f"{biz_name}: Call Summary"
-    headers = {
-        "Title": title,
-        "Priority": "high" if has_plan else "default",
-        "Tags": "phone,call",
-        "Actions": actions_header,
-    }
+    if intent_cfg:
+        # Intent-aware buttons
+        action_parts = []
+        for btn_type, label, url_template in intent_cfg["buttons"]:
+            btn_url = api_url + url_template.replace("{id}", tid)
+            action_parts.append(
+                f"{btn_type}, {label}, {btn_url}, method=POST, clear=true"
+            )
+        action_parts.append(
+            f"view, View Transcript, {api_url}/api/v1/comms/call-actions/{tid}/view"
+        )
+        actions_header = "; ".join(action_parts)
+
+        intent_label = _INTENT_LABELS.get(business_intent, business_intent)
+        if is_new_lead:
+            title = f"NEW LEAD: {intent_label} - {biz_name}"
+        else:
+            title = f"{intent_label}: {biz_name}"
+
+        headers = {
+            "Title": title,
+            "Priority": intent_cfg["priority"],
+            "Tags": intent_cfg["tags"],
+            "Actions": actions_header,
+        }
+    else:
+        # Fallback: existing action-based buttons
+        action_parts = []
+        if has_plan:
+            action_parts.append(
+                f"http, Approve Plan, {api_url}/api/v1/comms/call-actions/{tid}/approve-plan, "
+                f"method=POST, clear=true"
+            )
+            action_parts.append(
+                f"http, Reject, {api_url}/api/v1/comms/call-actions/{tid}/reject-plan, "
+                f"method=POST, clear=true"
+            )
+        else:
+            for action in proposed_actions:
+                atype = action.get("type") or action.get("action", "none")
+                if atype in ("book_estimate", "create_appointment", "book_appointment"):
+                    action_parts.append(
+                        f"http, Book Appointment, {api_url}/api/v1/comms/call-actions/{tid}/book, "
+                        f"method=POST, clear=true"
+                    )
+                elif atype in ("send_sms", "send_followup", "schedule_callback"):
+                    action_parts.append(
+                        f"http, Send SMS, {api_url}/api/v1/comms/call-actions/{tid}/sms, "
+                        f"method=POST, clear=true"
+                    )
+        action_parts.append(
+            f"view, View Transcript, {api_url}/api/v1/comms/call-actions/{tid}/view"
+        )
+        actions_header = "; ".join(action_parts)
+
+        if is_new_lead:
+            title = f"NEW LEAD: {biz_name} Call"
+        elif has_plan:
+            title = f"{biz_name}: Action Plan"
+        else:
+            title = f"{biz_name}: Call Summary"
+
+        headers = {
+            "Title": title,
+            "Priority": "high" if has_plan else "default",
+            "Tags": "phone,call",
+            "Actions": actions_header,
+        }
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:

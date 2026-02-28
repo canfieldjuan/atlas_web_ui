@@ -52,7 +52,11 @@ class KokoroTTS:
             lang_code = _LANG_MAP.get(self.lang, self.lang)
             logger.info("Loading Kokoro KPipeline (lang_code=%s)", lang_code)
             self._pipeline = KPipeline(lang_code=lang_code)
-            logger.info("Kokoro KPipeline loaded successfully")
+            # Warmup inference — compile CUDA kernels so first real speak()
+            # doesn't pay the 600ms+ cold-start penalty.
+            for _g, _p, _a in self._pipeline("warmup", voice=self.voice, speed=self.speed):
+                break  # One chunk is enough to warm the kernels
+            logger.info("Kokoro KPipeline loaded and warmed")
 
     def speak(self, text: str):
         """Synthesize and stream audio from Kokoro to sounddevice."""

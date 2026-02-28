@@ -210,6 +210,7 @@ class HeadlessRunner:
                     title=title,
                     priority=priority,
                     tags=tags,
+                    markdown=True,
                 )
                 logger.info("Sent notification for task '%s'", task.name)
             except Exception:
@@ -273,7 +274,7 @@ class HeadlessRunner:
             # Auto-activate Ollama backend for headless synthesis
             try:
                 from ..config import settings as _settings
-                llm_registry.activate("ollama", model=_settings.llm.ollama_model, base_url=_settings.llm.ollama_url)
+                llm_registry.activate("ollama", model=_settings.llm.ollama_model, base_url=_settings.llm.ollama_url, timeout=_settings.llm.ollama_timeout)
                 llm = llm_registry.get_active()
                 logger.info("Auto-activated Ollama LLM for synthesis")
             except Exception as e:
@@ -403,6 +404,25 @@ class HeadlessRunner:
                 result["email_drafts_expired"] = expired_result
             except Exception as e:
                 logger.warning("Email drafts expiration failed: %s", e)
+
+            # Pipeline cleanup rules (registered dynamically)
+            try:
+                from ..pipelines import get_pipeline_cleanup_rules, resolve_config_value
+
+                for rule, pipeline_name in get_pipeline_cleanup_rules():
+                    try:
+                        retention = resolve_config_value(rule.retention_config_key)
+                        if retention is None:
+                            continue
+                        key = rule.result_key or f"{rule.table}_cleaned"
+                        cleanup_result = await pool.execute(rule.where_clause, retention)
+                        result[key] = cleanup_result
+                    except Exception as e:
+                        logger.debug(
+                            "%s/%s cleanup skipped: %s", pipeline_name, rule.table, e,
+                        )
+            except Exception as e:
+                logger.debug("Pipeline cleanup rules unavailable: %s", e)
 
         return result
 

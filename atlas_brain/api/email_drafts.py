@@ -181,13 +181,21 @@ async def approve_draft(draft_id: UUID):
         gmail_sent_id = send_result.get("id", "")
         sent_at = datetime.now(timezone.utc)
 
+        # Fetch RFC 2822 Message-ID of the email we just sent
+        sent_rfc_message_id = None
+        if gmail_sent_id:
+            try:
+                sent_rfc_message_id = await transport.get_sent_message_id(gmail_sent_id)
+            except Exception as exc:
+                logger.warning("Could not retrieve sent Message-ID for %s: %s", gmail_sent_id, exc)
+
         await pool.execute(
             """
             UPDATE email_drafts
-            SET status = 'sent', sent_at = $1, gmail_sent_id = $2
-            WHERE id = $3
+            SET status = 'sent', sent_at = $1, gmail_sent_id = $2, sent_message_id = $3
+            WHERE id = $4
             """,
-            sent_at, gmail_sent_id, draft_id,
+            sent_at, gmail_sent_id, sent_rfc_message_id, draft_id,
         )
 
         logger.info("Draft %s approved and sent: gmail_id=%s", draft_id, gmail_sent_id)
@@ -204,6 +212,14 @@ async def approve_draft(draft_id: UUID):
             original_from=original_from,
             draft_subject=row["draft_subject"],
             sent_to=reply_to_addr,
+        )
+
+        # Emit event for reasoning agent
+        from ..reasoning.producers import emit_if_enabled
+        await emit_if_enabled(
+            "email.draft_sent", "email_drafts",
+            {"draft_id": str(draft_id), "sent_to": reply_to_addr,
+             "subject": row["draft_subject"]},
         )
 
         return {
@@ -381,6 +397,43 @@ async def generate_draft(gmail_message_id: str):
     # Enrich with graph facts
     graph_facts = await _get_sender_graph_context(full_msg.get("from", ""))
 
+    # Check if this is a follow-up to a thread Atlas participated in
+    thread_context = None
+    msg_in_reply_to = full_msg.get("in_reply_to", "").strip()
+    msg_references = full_msg.get("references", "").strip()
+    if msg_in_reply_to or msg_references:
+        candidate_ids: set[str] = set()
+        if msg_in_reply_to:
+            candidate_ids.add(msg_in_reply_to)
+        if msg_references:
+            candidate_ids.update(msg_references.split())
+        if candidate_ids:
+            try:
+                thread_row = await pool.fetchrow(
+                    """
+                    SELECT ed.draft_subject, ed.draft_body, ed.sent_at,
+                           pe.intent AS original_intent
+                    FROM email_drafts ed
+                    LEFT JOIN processed_emails pe
+                        ON pe.gmail_message_id = ed.gmail_message_id
+                    WHERE ed.status = 'sent'
+                      AND (ed.original_message_id = ANY($1::text[])
+                           OR ed.sent_message_id = ANY($1::text[]))
+                    ORDER BY ed.sent_at DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    list(candidate_ids),
+                )
+                if thread_row:
+                    thread_context = {
+                        "is_followup": True,
+                        "original_intent": thread_row["original_intent"] or "unknown",
+                        "our_previous_reply": (thread_row["draft_body"] or "")[:500],
+                        "our_previous_subject": thread_row["draft_subject"] or "",
+                    }
+            except Exception as exc:
+                logger.warning("Thread context lookup failed for %s: %s", gmail_message_id, exc)
+
     # Build LLM input
     user_input_dict = {
         "original_from": full_msg.get("from", ""),
@@ -393,6 +446,8 @@ async def generate_draft(gmail_message_id: str):
         user_input_dict["customer_context"] = customer_context_str
     if graph_facts:
         user_input_dict["graph_context"] = graph_facts
+    if thread_context:
+        user_input_dict["thread_context"] = thread_context
 
     user_input = json.dumps(user_input_dict, indent=2)
 
@@ -438,15 +493,44 @@ async def generate_draft(gmail_message_id: str):
         "model_name": cfg.model_name,
     })
 
+    # Look up intent + confidence for auto-approve notification
+    _intent = None
+    _confidence = 0.0
+    pe_row = await pool.fetchrow(
+        "SELECT intent, action_plan FROM processed_emails WHERE gmail_message_id = $1",
+        gmail_message_id,
+    )
+    if pe_row:
+        _intent = pe_row["intent"]
+        ap_raw = pe_row["action_plan"]
+        if ap_raw:
+            try:
+                ap = json.loads(ap_raw) if isinstance(ap_raw, str) else ap_raw
+                if isinstance(ap, dict):
+                    _confidence = float(ap.get("confidence", 0.0))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
     # Send notification with approve/reject buttons
     await _send_draft_notification(
         draft_id=draft_id,
         original_from=full_msg.get("from", ""),
         draft_subject=draft_subject,
         draft_body=draft_body,
+        intent=_intent,
+        confidence=_confidence,
     )
 
     logger.info("On-demand draft %s generated for message %s", draft_id, gmail_message_id)
+
+    # Emit event for reasoning agent
+    from ..reasoning.producers import emit_if_enabled
+    await emit_if_enabled(
+        "email.draft_generated", "email_drafts",
+        {"draft_id": str(draft_id), "gmail_message_id": gmail_message_id,
+         "subject": draft_subject, "from": full_msg.get("from", "")},
+    )
+
     return {
         "draft_id": draft_id,
         "status": "pending",
@@ -639,12 +723,32 @@ async def redraft(draft_id: UUID, reason: str | None = Query(default=None)):
     )
     new_draft_id = str(new_row["id"])
 
+    # Look up intent + confidence for auto-approve notification
+    _rd_intent = None
+    _rd_confidence = 0.0
+    pe_row2 = await pool.fetchrow(
+        "SELECT intent, action_plan FROM processed_emails WHERE gmail_message_id = $1",
+        parent["gmail_message_id"],
+    )
+    if pe_row2:
+        _rd_intent = pe_row2["intent"]
+        ap_raw2 = pe_row2["action_plan"]
+        if ap_raw2:
+            try:
+                ap2 = json.loads(ap_raw2) if isinstance(ap_raw2, str) else ap_raw2
+                if isinstance(ap2, dict):
+                    _rd_confidence = float(ap2.get("confidence", 0.0))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+
     # Send notification with approve/reject buttons
     await _send_draft_notification(
         draft_id=new_draft_id,
         original_from=parent["original_from"],
         draft_subject=draft_subject,
         draft_body=draft_body,
+        intent=_rd_intent,
+        confidence=_rd_confidence,
     )
 
     logger.info("Redraft %s (attempt %d) generated for parent %s", new_draft_id, new_attempt, draft_id)

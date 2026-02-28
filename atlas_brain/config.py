@@ -5,7 +5,7 @@ Configuration is loaded from environment variables with sensible defaults.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -75,6 +75,7 @@ class LLMConfig(BaseSettings):
     # ollama settings (Ollama API backend)
     ollama_model: str = Field(default="qwen3:14b", description="Ollama model name")
     ollama_url: str = Field(default="http://localhost:11434", description="Ollama API URL (override: ATLAS_LLM__OLLAMA_URL)")
+    ollama_timeout: int = Field(default=120, description="Ollama HTTP timeout in seconds (increase for cloud relay models)")
 
     # transformers-flash settings (HuggingFace models)
     hf_model_id: str = Field(
@@ -605,6 +606,21 @@ class EmailDraftConfig(BaseSettings):
         default=32,
         description="Max tokens for triage response (yes/no answer)",
     )
+    auto_approve_enabled: bool = Field(
+        default=False, description="Auto-approve and send drafts above confidence threshold"
+    )
+    auto_approve_delay_seconds: int = Field(
+        default=300, ge=60, le=1800,
+        description="Delay before auto-sending (owner can cancel via ntfy during this window)",
+    )
+    auto_approve_min_confidence: float = Field(
+        default=0.85, ge=0.5, le=1.0,
+        description="Min intent confidence to auto-approve draft",
+    )
+    auto_approve_intents: list[str] = Field(
+        default=["info_admin", "estimate_request", "reschedule"],
+        description="Intents eligible for auto-approval (complaint always excluded)",
+    )
 
 
 class EmailIntakeConfig(BaseSettings):
@@ -622,6 +638,66 @@ class EmailIntakeConfig(BaseSettings):
     )
     max_action_plans_per_cycle: int = Field(
         default=5, ge=1, le=20, description="Cap LLM calls per polling cycle"
+    )
+    auto_execute_enabled: bool = Field(
+        default=False, description="Auto-execute intent actions above confidence threshold"
+    )
+    auto_execute_min_confidence: float = Field(
+        default=0.85, ge=0.5, le=1.0, description="Min confidence to auto-execute"
+    )
+    auto_execute_intents: list[str] = Field(
+        default=["estimate_request", "reschedule", "info_admin"],
+        description="Intents eligible for auto-execution (complaint always excluded)",
+    )
+    inbox_rules_enabled: bool = Field(
+        default=False, description="Evaluate user-defined inbox rules before LLM"
+    )
+    followup_auto_action_enabled: bool = Field(
+        default=False, description="Auto-draft replies to follow-up emails"
+    )
+    followup_auto_action_intents: list[str] = Field(
+        default=["estimate_request", "reschedule", "info_admin"],
+        description="Original intents eligible for follow-up auto-actions (complaint always excluded)",
+    )
+
+
+class EmailStaleCheckConfig(BaseSettings):
+    """Stale email re-engagement: detect stale drafts, unactioned emails, unanswered estimates."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ATLAS_EMAIL_STALE_CHECK_", env_file=".env", extra="ignore",
+    )
+
+    enabled: bool = Field(default=False, description="Enable stale email re-engagement checks")
+    interval_seconds: int = Field(
+        default=7200, ge=1800, le=86400, description="Check interval in seconds (default 2h)"
+    )
+
+    # Scenario 1: stale pending drafts
+    stale_draft_hours: int = Field(
+        default=12, ge=1, le=72, description="Hours before a pending draft is considered stale"
+    )
+
+    # Scenario 2: unactioned high-priority emails
+    unactioned_hours: int = Field(
+        default=24, ge=4, le=168, description="Hours before an unactioned email triggers escalation"
+    )
+
+    # Scenario 3: unanswered estimate replies
+    unanswered_days: int = Field(
+        default=3, ge=1, le=14, description="Days before generating a follow-up for unanswered sent replies"
+    )
+    unanswered_intents: list[str] = Field(
+        default=["estimate_request"],
+        description="Intents eligible for follow-up generation",
+    )
+    max_followups_per_cycle: int = Field(
+        default=3, ge=1, le=10, description="Max follow-up drafts to generate per cycle"
+    )
+
+    # Anti-spam
+    max_reminders: int = Field(
+        default=3, ge=1, le=10, description="Max stale reminders per draft/email before giving up"
     )
 
 
@@ -740,6 +816,18 @@ class VoiceClientConfig(BaseSettings):
         default=256,
         description="Max tokens for streaming LLM responses (prevents truncation)"
     )
+    conversation_agent_enabled: bool = Field(
+        default=True,
+        description=(
+            "Use the full agent path (with tool access) for conversation mode "
+            "instead of streaming. Enables natural tool use mid-conversation "
+            "at the cost of ~500ms higher time-to-first-audio."
+        ),
+    )
+    conversation_agent_max_tokens: int = Field(
+        default=512,
+        description="Max tokens for agent-path responses in conversation mode",
+    )
 
     # VAD and segmentation settings
     vad_aggressiveness: int = Field(default=2, description="WebRTC VAD aggressiveness (0-3)")
@@ -765,7 +853,7 @@ class VoiceClientConfig(BaseSettings):
     conversation_silence_ratio: float = Field(default=0.15, description="Speech ratio below which silence counter engages")
     conversation_asr_holdoff_ms: int = Field(default=500, description="Suppress finalization for N ms after last ASR partial")
     asr_quiet_limit: int = Field(
-        default=10,
+        default=5,
         description="Max frames with no new ASR partial before stopping audio feed (~80ms/frame)"
     )
 
@@ -1199,7 +1287,7 @@ class IntentRouterConfig(BaseSettings):
         description="Use LLM when semantic confidence is too low",
     )
     llm_fallback_timeout: float = Field(
-        default=2.0,
+        default=3.0,
         description="Timeout in seconds for LLM fallback classification",
     )
     llm_fallback_temperature: float = Field(
@@ -1213,7 +1301,7 @@ class IntentRouterConfig(BaseSettings):
         description="Max tokens for LLM fallback classification response",
     )
     llm_fallback_model: str = Field(
-        default="qwen3:1.7b",
+        default="phi3:mini",
         description="Ollama model for LLM fallback classification (lighter than main model)",
     )
     llm_fallback_log: str = Field(
@@ -1229,6 +1317,16 @@ class IntentRouterConfig(BaseSettings):
         ge=0.0,
         le=1.0,
         description="Min confidence to skip LLM parse for conversation queries",
+    )
+    conversation_workflow_confidence_floor: float = Field(
+        default=0.30,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Lower confidence floor for workflow routes when in conversation mode. "
+            "Prevents borderline workflow intents from falling through to the "
+            "general LLM tool path during active conversation."
+        ),
     )
 
 
@@ -1758,6 +1856,194 @@ class CallIntelligenceConfig(BaseSettings):
     notify_enabled: bool = Field(default=True, description="Push ntfy after processing")
 
 
+class SMSIntelligenceConfig(BaseSettings):
+    """SMS classification, extraction, and notification."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ATLAS_SMS_INTELLIGENCE_", env_file=".env", extra="ignore"
+    )
+    enabled: bool = Field(default=True, description="Enable SMS intelligence pipeline")
+    llm_max_tokens: int = Field(default=512, ge=128, le=2048)
+    llm_temperature: float = Field(default=0.3, ge=0.0, le=1.0)
+    llm_timeout: float = Field(default=20.0, ge=5.0, le=60.0, description="LLM call timeout in seconds")
+    notify_enabled: bool = Field(default=True, description="Push ntfy after processing")
+    auto_reply_timeout: float = Field(default=10.0, ge=3.0, le=30.0, description="Auto-reply LLM timeout")
+
+
+class InvoicingConfig(BaseSettings):
+    """Invoicing and payment tracking configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ATLAS_INVOICING_", env_file=".env", extra="ignore"
+    )
+    enabled: bool = Field(default=False, description="Enable invoicing system")
+    default_payment_terms_days: int = Field(default=30, ge=1, le=365, description="Default days until due")
+    default_tax_rate: float = Field(default=0.0, ge=0.0, le=1.0, description="Default tax rate (0.0-1.0)")
+    reminder_max_count: int = Field(default=3, ge=0, le=10, description="Max payment reminders per invoice")
+    reminder_interval_days: int = Field(default=7, ge=1, le=90, description="Days between reminders")
+    notify_enabled: bool = Field(default=True, description="Push ntfy for invoice events")
+    invoice_number_prefix: str = Field(default="INV", description="Prefix for invoice numbers")
+    auto_invoice_enabled: bool = Field(default=True, description="Monthly auto-invoice generation")
+    auto_invoice_send_email: bool = Field(default=True, description="Auto-send invoices via email")
+    auto_invoice_due_days: int = Field(default=30, ge=1, le=365, description="Payment terms for auto-invoices")
+
+
+class ExternalDataConfig(BaseSettings):
+    """External data producers: news feeds and financial markets."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ATLAS_EXTERNAL_DATA_", env_file=".env", extra="ignore"
+    )
+
+    enabled: bool = Field(default=False, description="Master switch for external data producers")
+    # News
+    news_enabled: bool = Field(default=True, description="Enable news intake (requires enabled=True)")
+    news_interval_seconds: int = Field(default=900, description="News polling interval (15 min)")
+    news_api_provider: str = Field(default="mediastack", description="mediastack | google_rss")
+    news_api_key: Optional[str] = Field(default=None, description="API key (Mediastack access_key)")
+    news_max_articles_per_poll: int = Field(default=20, description="Max articles per poll cycle")
+    news_significance_threshold: float = Field(default=0.6, description="LLM significance score cutoff (0-1)")
+    # Markets
+    market_enabled: bool = Field(default=True, description="Enable market intake (requires enabled=True)")
+    market_interval_seconds: int = Field(default=300, description="Market polling interval (5 min)")
+    market_api_provider: str = Field(default="alpha_vantage", description="alpha_vantage | finnhub")
+    market_api_key: Optional[str] = Field(default=None, description="API key (Alpha Vantage or Finnhub)")
+    market_default_threshold_pct: float = Field(default=5.0, description="Default price move % to trigger alert")
+    market_hours_only: bool = Field(default=False, description="Only poll during US market hours (9:30-16:00 ET)")
+    # Context / reasoning windows
+    context_lookback_hours: int = Field(default=24, description="Hours of market/news data to include in reasoning context")
+    correlation_news_lookback_hours: int = Field(default=48, description="Hours to look back for news in correlation detection")
+    correlation_market_window_hours: int = Field(default=24, description="Hours after news to check for correlated market moves")
+    retention_days: int = Field(default=30, description="Days to retain dedup entries and market snapshots")
+    # Daily intelligence
+    intelligence_enabled: bool = Field(default=True, description="Enable daily intelligence analysis task")
+    intelligence_cron: str = Field(default="0 20 * * *", description="Cron for daily intelligence (default 8 PM)")
+    intelligence_analysis_window_days: int = Field(default=7, description="Days of data to include in analysis")
+    intelligence_max_prior_sessions: int = Field(default=5, description="Max prior reasoning journal entries to include")
+    intelligence_max_tokens: int = Field(default=16384, description="Max tokens for intelligence LLM call")
+    intelligence_journal_retention_days: int = Field(default=90, description="Days to retain reasoning journal entries")
+    intelligence_news_retention_days: int = Field(default=30, description="Days to retain news articles")
+    # API tuning
+    news_max_keywords_per_query: int = Field(default=10, description="Max keywords per NewsAPI query")
+    news_max_rss_feeds: int = Field(default=5, description="Max Google RSS feeds to poll per cycle")
+    news_keyword_min_length: int = Field(default=3, description="Min word length for market symbol cross-ref matching")
+    api_timeout_seconds: float = Field(default=20.0, description="HTTP timeout for external API calls")
+    # Article enrichment
+    enrichment_enabled: bool = Field(default=True, description="Enable article content enrichment")
+    enrichment_interval_seconds: int = Field(default=600, description="Article enrichment polling interval (10 min)")
+    enrichment_max_per_batch: int = Field(default=10, description="Max articles to enrich per batch")
+    enrichment_max_attempts: int = Field(default=3, description="Max fetch attempts before marking failed")
+    enrichment_content_max_chars: int = Field(default=10000, description="Max chars to store from article body")
+    enrichment_fetch_timeout: float = Field(default=15.0, description="HTTP timeout for article content fetch")
+    # Pressure scoring
+    pressure_enabled: bool = Field(default=True, description="Enable pressure signal detection")
+    pressure_baseline_window_days: int = Field(default=180, description="Rolling window for baseline (6 months)")
+    pressure_alert_threshold: float = Field(default=7.0, description="Pressure score alert threshold (0-10)")
+    pressure_drift_alert_threshold: float = Field(default=2.0, description="Sentiment drift alert threshold")
+    # Complaint mining
+    complaint_mining_enabled: bool = Field(default=False, description="Enable complaint mining pipeline")
+    complaint_enrichment_interval_seconds: int = Field(default=300, description="Complaint enrichment polling interval (5 min)")
+    complaint_enrichment_max_per_batch: int = Field(default=20, description="Max reviews to enrich per batch")
+    complaint_enrichment_max_attempts: int = Field(default=3, description="Max enrichment attempts before marking failed")
+    complaint_enrichment_local_only: bool = Field(default=False, description="Force local LLM for enrichment (skip Claude)")
+    complaint_enrichment_reviews_per_call: int = Field(default=1, description="Reviews per LLM call (batch mode when >1, max 10)")
+    complaint_analysis_enabled: bool = Field(default=True, description="Enable daily complaint analysis task")
+    complaint_analysis_cron: str = Field(default="0 21 * * *", description="Cron for complaint analysis (default 9 PM)")
+    complaint_analysis_window_days: int = Field(default=7, description="Days of enriched reviews to include in analysis")
+    complaint_analysis_max_tokens: int = Field(default=16384, description="Max tokens for analysis LLM call")
+    complaint_retention_days: int = Field(default=365, description="Days to retain complaint reports")
+    # Content generation (Claude-powered)
+    complaint_content_enabled: bool = Field(default=True, description="Enable complaint content generation")
+    complaint_content_cron: str = Field(default="0 22 * * *", description="Cron for content generation (default 10 PM)")
+    complaint_content_max_per_run: int = Field(default=5, description="Max content pieces to generate per run")
+    complaint_content_max_tokens: int = Field(default=4096, description="Max tokens per content generation call")
+    # Deep enrichment (second-pass extraction)
+    deep_enrichment_interval_seconds: int = Field(default=600, description="Deep enrichment polling interval (10 min)")
+    deep_enrichment_max_per_batch: int = Field(default=5, description="Max reviews to deep-enrich per autonomous batch")
+    deep_enrichment_max_attempts: int = Field(default=3, description="Max attempts before marking deep_failed")
+    deep_enrichment_max_tokens: int = Field(default=1024, description="Max LLM output tokens for deep extraction")
+    # Competitive intelligence (cross-brand analysis from deep_extraction)
+    competitive_intelligence_enabled: bool = Field(default=True, description="Enable competitive intelligence analysis")
+    competitive_intelligence_cron: str = Field(default="30 21 * * *", description="Cron for competitive intelligence (default 9:30 PM)")
+    competitive_intelligence_max_tokens: int = Field(default=16384, description="Max tokens for competitive intelligence LLM call")
+    competitive_intelligence_min_deep_enriched: int = Field(default=100, description="Min deep-enriched reviews required to run")
+
+
+class B2BChurnConfig(BaseSettings):
+    """B2B software churn prediction pipeline configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ATLAS_B2B_CHURN_", env_file=".env", extra="ignore"
+    )
+
+    enabled: bool = Field(default=False, description="Enable B2B churn prediction pipeline")
+
+    # Enrichment
+    enrichment_interval_seconds: int = Field(default=300, description="Enrichment polling interval")
+    enrichment_max_per_batch: int = Field(default=10, description="Max reviews to enrich per batch")
+    enrichment_max_attempts: int = Field(default=3, description="Max enrichment attempts")
+    enrichment_max_tokens: int = Field(default=1024, description="Max LLM output tokens")
+    enrichment_local_only: bool = Field(default=False, description="Force local LLM only")
+
+    # Intelligence aggregation
+    intelligence_enabled: bool = Field(default=True, description="Enable churn intelligence aggregation")
+    intelligence_cron: str = Field(default="0 21 * * 0", description="Weekly churn intelligence (Sunday 9 PM)")
+    intelligence_max_tokens: int = Field(default=16384, description="Max tokens for intelligence LLM call")
+    intelligence_window_days: int = Field(default=30, description="Days of enriched reviews to analyze")
+    intelligence_min_reviews: int = Field(default=3, description="Min reviews per vendor to include")
+
+    # Churn thresholds
+    high_churn_urgency_threshold: int = Field(default=7, description="Urgency score >= this = high churn risk")
+    enterprise_only: bool = Field(default=False, description="Only include enterprise-segment reviews")
+
+
+class B2BScrapeConfig(BaseSettings):
+    """B2B review scraping pipeline configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="ATLAS_B2B_SCRAPE_", env_file=".env", extra="ignore"
+    )
+
+    enabled: bool = Field(default=False, description="Enable B2B review scraping pipeline")
+
+    # Schedule
+    intake_interval_seconds: int = Field(default=3600, description="Scrape polling interval (1 hour)")
+    max_targets_per_run: int = Field(default=5, description="Max targets to scrape per run")
+
+    # Proxies (comma-separated URLs)
+    proxy_datacenter_urls: str = Field(default="", description="Datacenter proxy URLs (comma-separated)")
+    proxy_residential_urls: str = Field(default="", description="Residential proxy URLs (comma-separated)")
+    proxy_residential_geo: str = Field(default="US", description="Residential proxy geo code")
+
+    # Per-domain rate limits (RPM)
+    g2_rpm: int = Field(default=6, description="G2 requests per minute")
+    capterra_rpm: int = Field(default=8, description="Capterra requests per minute")
+    trustradius_rpm: int = Field(default=10, description="TrustRadius requests per minute")
+    reddit_rpm: int = Field(default=30, description="Reddit requests per minute")
+
+    # Behavioral delays
+    min_delay_seconds: float = Field(default=2.0, description="Min delay between requests")
+    max_delay_seconds: float = Field(default=8.0, description="Max delay between requests")
+
+    # Reddit
+    reddit_default_subreddits: str = Field(
+        default="sysadmin,salesforce,aws,ITManagers,devops,msp",
+        description="Default subreddits for Reddit scraping (comma-separated)",
+    )
+
+    # Resilience
+    max_retries: int = Field(default=2, description="Max retries per request")
+    blocked_cooldown_hours: int = Field(default=24, description="Hours to cool down after blocked")
+    scrape_log_retention_days: int = Field(default=30, description="Days to retain scrape logs")
+
+    # CAPTCHA solving
+    captcha_enabled: bool = Field(default=False, description="Enable CAPTCHA solving for protected sites")
+    captcha_provider: str = Field(default="capsolver", description="CAPTCHA solver provider (capsolver or 2captcha)")
+    captcha_api_key: str = Field(default="", description="CAPTCHA solver API key")
+    captcha_domains: str = Field(default="g2.com,capterra.com", description="Domains with CAPTCHA solving enabled (comma-separated)")
+    captcha_proxy_url: str = Field(default="", description="Sticky/static proxy URL for CAPTCHA solving (same IP for solve + retry)")
+
+
 class TemporalPatternConfig(BaseSettings):
     """Temporal pattern context configuration."""
 
@@ -1784,12 +2070,44 @@ class MCPConfig(BaseSettings):
     email_enabled: bool = Field(default=True, description="Enable Email MCP server")
     calendar_enabled: bool = Field(default=True, description="Enable Calendar MCP server")
     twilio_enabled: bool = Field(default=True, description="Enable Twilio MCP server")
+    invoicing_enabled: bool = Field(default=True, description="Enable Invoicing MCP server")
+    auth_token: str = Field(default="", description="Bearer token for SSE transport auth (empty = no auth)")
     transport: str = Field(default="stdio", description="MCP transport: stdio or sse")
     host: str = Field(default="0.0.0.0", description="Bind host for SSE transport")
     crm_port: int = Field(default=8056, description="Port for CRM MCP server (SSE transport)")
     email_port: int = Field(default=8057, description="Port for Email MCP server (SSE transport)")
     twilio_port: int = Field(default=8058, description="Port for Twilio MCP server (SSE transport)")
     calendar_port: int = Field(default=8059, description="Port for Calendar MCP server (SSE transport)")
+    invoicing_port: int = Field(default=8060, description="Port for Invoicing MCP server (SSE transport)")
+
+
+class AlertMonitorConfig(BaseSettings):
+    """Proactive weather and traffic alert monitoring configuration."""
+
+    model_config = SettingsConfigDict(env_prefix="ATLAS_ALERT_MONITOR__", env_file=".env", extra="ignore")
+
+    enabled: bool = Field(default=False, description="Enable proactive weather/traffic alerts")
+    check_interval_seconds: int = Field(default=600, description="Poll interval (10 min default)")
+
+    # Location (defaults from weather tool config at runtime)
+    home_lat: float | None = Field(default=None, description="Home latitude (falls back to weather_default_lat)")
+    home_lon: float | None = Field(default=None, description="Home longitude (falls back to weather_default_lon)")
+    work_lat: float | None = Field(default=None, description="Work/office latitude for commute monitoring")
+    work_lon: float | None = Field(default=None, description="Work/office longitude for commute monitoring")
+
+    # Weather alert filtering
+    nws_severities: str = Field(
+        default="Extreme,Severe",
+        description="Comma-separated NWS severity levels to alert on (Extreme, Severe, Moderate, Minor)",
+    )
+
+    # Traffic thresholds
+    traffic_radius_miles: float = Field(default=15, description="Radius around home for traffic incidents")
+    commute_delay_threshold_minutes: int = Field(default=10, description="Commute delay (minutes) before alerting")
+    traffic_min_severity: int = Field(default=2, description="Min TomTom incident magnitude (0-4) for area alerts")
+
+    # TTS voice announcements for urgent alerts
+    tts_on_urgent: bool = Field(default=True, description="TTS broadcast for tornado/flash flood/severe storm alerts")
 
 
 class Settings(BaseSettings):
@@ -1860,11 +2178,25 @@ class Settings(BaseSettings):
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     email_draft: EmailDraftConfig = Field(default_factory=EmailDraftConfig)
     email_intake: EmailIntakeConfig = Field(default_factory=EmailIntakeConfig)
+    email_stale_check: EmailStaleCheckConfig = Field(default_factory=EmailStaleCheckConfig)
     temporal: TemporalPatternConfig = Field(default_factory=TemporalPatternConfig)
     call_intelligence: CallIntelligenceConfig = Field(default_factory=CallIntelligenceConfig)
+    sms_intelligence: SMSIntelligenceConfig = Field(default_factory=SMSIntelligenceConfig)
+    invoicing: InvoicingConfig = Field(default_factory=InvoicingConfig)
+    external_data: ExternalDataConfig = Field(default_factory=ExternalDataConfig)
+    b2b_churn: B2BChurnConfig = Field(default_factory=B2BChurnConfig)
+    b2b_scrape: B2BScrapeConfig = Field(default_factory=B2BScrapeConfig)
     openai_compat: OpenAICompatConfig = Field(default_factory=OpenAICompatConfig)
     ftl_tracing: FTLTracingConfig = Field(default_factory=FTLTracingConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
+    alert_monitor: AlertMonitorConfig = Field(default_factory=AlertMonitorConfig)
+
+    # Reasoning agent (cross-domain event-driven intelligence)
+    @staticmethod
+    def _reasoning_factory():
+        from .reasoning.config import ReasoningConfig
+        return ReasoningConfig()
+    reasoning: Any = Field(default_factory=lambda: Settings._reasoning_factory())
 
     # Presence tracking - imported from presence module
     @property

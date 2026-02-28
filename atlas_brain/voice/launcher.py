@@ -7,6 +7,7 @@ Integrates the voice pipeline with AtlasAgent.
 import asyncio
 import concurrent.futures
 import logging
+import re
 import signal
 import sys
 import threading
@@ -185,6 +186,24 @@ def _create_streaming_agent_runner():
                         route_result.confidence
                     )
                 # Prefill already triggered by early silence
+
+                # Conversation mode workflow breakout: if cached prep returned
+                # "conversation" but the full transcript might be a workflow trigger,
+                # re-classify fresh to avoid masking workflow routes.
+                if (use_streaming
+                        and _voice_pipeline is not None
+                        and _voice_pipeline.frame_processor.state == "conversing"):
+                    from ..services.intent_router import ROUTE_TO_WORKFLOW
+                    fresh_route = await route_query(transcript)
+                    if fresh_route.raw_label in ROUTE_TO_WORKFLOW:
+                        route_result = fresh_route
+                        _last_route_result["result"] = route_result
+                        use_streaming = False
+                        logger.info(
+                            "Workflow breakout: %s detected over cached conversation "
+                            "(conf=%.2f)",
+                            fresh_route.raw_label, fresh_route.confidence,
+                        )
             elif settings.intent_router.enabled and not has_active_workflow:
                 _classify_t0 = _time.perf_counter()
                 route_result = await route_query(transcript)
@@ -202,6 +221,11 @@ def _create_streaming_agent_runner():
                     # Conversation needs LLM -- trigger prefill now
                     if _voice_pipeline is not None:
                         _voice_pipeline.trigger_prefill()
+                    # Note: if the semantic router misclassifies a workflow
+                    # command as "conversation" here, the streaming path has
+                    # no tool access, so no unauthorized actions occur -- the
+                    # user just gets a wrong text reply. The fix for this is
+                    # improving the router's training data, not re-routing.
                 else:
                     logger.info(
                         "Non-streaming path: %s/%s (conf=%.2f, skipping prefill)",
@@ -214,6 +238,32 @@ def _create_streaming_agent_runner():
                 if settings.intent_router.enabled:
                     route_result = await route_query(transcript)
                     _last_route_result["result"] = route_result
+
+                    # If the new route is a different workflow or a clear
+                    # non-conversation intent, the user is starting something
+                    # new — clear the stale workflow so it doesn't hijack.
+                    from ..services.intent_router import ROUTE_TO_WORKFLOW
+                    new_wf = ROUTE_TO_WORKFLOW.get(route_result.raw_label)
+                    if (route_result.confidence >= settings.intent_router.confidence_threshold
+                            and route_result.action_category != "conversation"
+                            and new_wf != workflow.workflow_type):
+                        logger.info(
+                            "New intent %s (conf=%.2f) overrides active %s workflow — clearing",
+                            route_result.raw_label, route_result.confidence,
+                            workflow.workflow_type,
+                        )
+                        await manager.clear_workflow_state(session_id)
+                        has_active_workflow = False
+
+            # Conversation mode: use agent path for full tool access.
+            # Streaming has no tools — the LLM can't search emails, check
+            # calendars, or execute any MCP tools in streaming mode.
+            if (use_streaming
+                    and settings.voice.conversation_agent_enabled
+                    and _voice_pipeline is not None
+                    and _voice_pipeline.frame_processor.state == "conversing"):
+                use_streaming = False
+                logger.info("Conversation mode: using agent path for tool access")
 
             if use_streaming:
                 _entity = getattr(route_result, "entity_name", None) if route_result else None
@@ -736,6 +786,10 @@ async def _run_agent_fallback(
     speaker_id = context_dict.get("speaker_id")
     speaker_name = context_dict.get("speaker_name")
     runtime_ctx: Dict[str, Any] = {"node_id": node_id, "speaker_uuid": speaker_id}
+    if (_voice_pipeline is not None
+            and _voice_pipeline.frame_processor.state == "conversing"):
+        runtime_ctx["in_conversation_mode"] = True
+        runtime_ctx["conversation_max_tokens"] = settings.voice.conversation_agent_max_tokens
     if pre_route_result is not None:
         runtime_ctx["pre_route_result"] = pre_route_result
     try:
@@ -749,7 +803,11 @@ async def _run_agent_fallback(
         )
         _signal_workflow_state(result)
         if result.response_text:
-            on_sentence(result.response_text)
+            sentences = re.split(r'(?<=[.!?])\s+', result.response_text)
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if sentence:
+                    on_sentence(sentence)
     except Exception as e:
         logger.error("Agent fallback failed: %s", e)
         on_sentence(ErrorPhrase(settings.voice.error_agent_failed))
@@ -821,10 +879,6 @@ def _create_early_prep_runner():
 
             # Intent routing on partial transcript
             route_result = await route_query(partial_transcript)
-            if route_result.action_category != "conversation":
-                logger.debug("Early prep: non-conversation intent (%s), skipping",
-                             route_result.action_category)
-                return  # Not conversation, don't bother caching
 
             # Entity-aware search (parallel vector + graph traversal)
             pre_fetched = None
@@ -1222,6 +1276,20 @@ def stop_voice_pipeline() -> None:
         _free_mode_manager = None
 
     if _voice_pipeline is not None:
+        # Release entity locks for the ending session
+        session_id = getattr(_voice_pipeline, "session_id", None)
+        if session_id:
+            try:
+                import asyncio
+                from ..reasoning.lock_integration import on_voice_session_end
+                loop = getattr(_voice_pipeline, "event_loop", None)
+                if loop and loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        on_voice_session_end(session_id), loop
+                    )
+            except Exception:
+                pass
+
         try:
             _voice_pipeline.playback.stop()
             _voice_pipeline.command_executor.shutdown()
